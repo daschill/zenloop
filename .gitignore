@@ -1,0 +1,28 @@
+# Build
+**/bin/
+**/obj/
+native/build/
+dist/
+.vs/
+*.user
+*.suo
+
+# Native helpers (native/build.ps1)
+zenloop/bin/
+
+# ADLX SDK (cloned by native/build.ps1)
+vendor/ADLX/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime user data
+logs/
+profiles/
+crash.log
+
+# OS
+Thumbs.db
+Desktop.ini

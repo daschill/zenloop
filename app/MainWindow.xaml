@@ -1,0 +1,378 @@
+<Window x:Class="ZenLoop.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ZenLoop"
+        Height="900" Width="1500"
+        MinHeight="720" MinWidth="1280"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource Bg}"
+        Loaded="OnLoaded"
+        Closing="OnClosing">
+    <DockPanel>
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Padding="22,16" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal">
+                    <Border Width="5" CornerRadius="2" Background="{StaticResource Accent}" Margin="0,2,12,2"/>
+                    <StackPanel>
+                        <TextBlock FontSize="22" FontWeight="Bold">ZENLOOP</TextBlock>
+                        <TextBlock x:Name="TxtSubtitle" Style="{StaticResource Label}" Margin="0,2,0,0"
+                                   Text="Ryzen 7 9800X3D  ·  Radeon RX 7900 XTX"/>
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border x:Name="PillAdmin" CornerRadius="10" Padding="10,4" Background="#3A2410" Margin="0,0,8,0">
+                        <TextBlock x:Name="TxtAdmin" Text="USER" Style="{StaticResource Label}" Foreground="{StaticResource Warn}"/>
+                    </Border>
+                    <Border x:Name="PillFactory" CornerRadius="10" Padding="10,4" Background="#1A2330" Margin="0,0,8,0">
+                        <TextBlock x:Name="TxtFactory" Text="FACTORY" Style="{StaticResource Label}" Foreground="{StaticResource Cyan}"/>
+                    </Border>
+                    <Border x:Name="PillStatus" CornerRadius="10" Padding="10,4" Background="#143326">
+                        <TextBlock x:Name="TxtStatus" Text="CONNECTING" Style="{StaticResource Label}" Foreground="{StaticResource Good}"/>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Footer -->
+        <Border DockPanel.Dock="Bottom" Padding="18,8" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+            <Grid>
+                <TextBlock x:Name="TxtFooter" Style="{StaticResource Label}" Text="Ready"/>
+                <TextBlock x:Name="TxtFooterRight" HorizontalAlignment="Right" Style="{StaticResource Label}"
+                           Text="GPU ADLX  ·  CPU/BIOS AMD Ryzen Master"/>
+            </Grid>
+        </Border>
+
+        <Grid Margin="18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Metrics -->
+            <UniformGrid Rows="1" Columns="6">
+                <Border Style="{StaticResource MetricCard}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Text="CLOCK"/>
+                        <TextBlock x:Name="ValClock" Style="{StaticResource Value}" Foreground="{StaticResource Cyan}" Text="—"/>
+                        <Polyline x:Name="SparkClock" Stroke="{StaticResource Cyan}" StrokeThickness="1.4" Height="22" Stretch="Fill" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource MetricCard}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Text="VOLTAGE"/>
+                        <TextBlock x:Name="ValVolt" Style="{StaticResource Value}" Foreground="{StaticResource Accent}" Text="—"/>
+                        <TextBlock x:Name="SubVolt" Style="{StaticResource Label}" Margin="0,4,0,0" Text="cap"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource MetricCard}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Text="GPU TEMP"/>
+                        <TextBlock x:Name="ValGpuTemp" Style="{StaticResource Value}" Text="—"/>
+                        <Polyline x:Name="SparkTemp" Stroke="{StaticResource Good}" StrokeThickness="1.4" Height="22" Stretch="Fill" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource MetricCard}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Text="HOTSPOT"/>
+                        <TextBlock x:Name="ValHot" Style="{StaticResource Value}" Text="—"/>
+                        <TextBlock Style="{StaticResource Label}" Margin="0,4,0,0" Text="abort 105 C"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource MetricCard}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Text="POWER"/>
+                        <TextBlock x:Name="ValPower" Style="{StaticResource Value}" Text="—"/>
+                        <TextBlock x:Name="SubFan" Style="{StaticResource Label}" Margin="0,4,0,0" Text="fan —"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource MetricCard}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Text="VRAM"/>
+                        <TextBlock x:Name="ValVram" Style="{StaticResource Value}" Text="—"/>
+                        <TextBlock x:Name="SubMemTemp" Style="{StaticResource Label}" Margin="0,4,0,0" Text="mem —"/>
+                    </StackPanel>
+                </Border>
+            </UniformGrid>
+
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="300"/>
+                    <ColumnDefinition Width="12"/>
+                    <ColumnDefinition Width="340"/>
+                    <ColumnDefinition Width="12"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Manual tune -->
+                <Border Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold" Text="Manual GPU"/>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Margin="0,2,0,12"
+                                   Text="Same sliders as Adrenalin Tuning"/>
+
+                        <StackPanel DockPanel.Dock="Bottom">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnApply" Content="Apply" Style="{StaticResource AccentButton}" Click="OnApply"/>
+                                <Button Grid.Column="2" x:Name="BtnReset" Content="Reset factory" Style="{StaticResource DangerButton}" Click="OnReset"/>
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel>
+                            <Grid Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource Label}" Text="MAX CLOCK"/>
+                                <TextBlock x:Name="LblClock" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="—"/>
+                            </Grid>
+                            <Slider x:Name="SldClock" Minimum="500" Maximum="3025" TickFrequency="25" IsSnapToTickEnabled="True" ValueChanged="OnSlider"/>
+
+                            <Grid Margin="0,12,0,4">
+                                <TextBlock Style="{StaticResource Label}" Text="VOLTAGE CAP"/>
+                                <TextBlock x:Name="LblVolt" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="—"/>
+                            </Grid>
+                            <Slider x:Name="SldVolt" Minimum="700" Maximum="1150" TickFrequency="5" IsSnapToTickEnabled="True" ValueChanged="OnSlider"/>
+
+                            <Grid Margin="0,12,0,4">
+                                <TextBlock Style="{StaticResource Label}" Text="VRAM"/>
+                                <TextBlock x:Name="LblVram" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="—"/>
+                            </Grid>
+                            <Slider x:Name="SldVram" Minimum="2500" Maximum="2700" TickFrequency="2" IsSnapToTickEnabled="True" ValueChanged="OnSlider"/>
+
+                            <Grid Margin="0,12,0,4">
+                                <TextBlock Style="{StaticResource Label}" Text="POWER LIMIT"/>
+                                <TextBlock x:Name="LblPower" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="—"/>
+                            </Grid>
+                            <Slider x:Name="SldPower" Minimum="-10" Maximum="15" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnSlider"/>
+
+                            <CheckBox x:Name="ChkFast" Content="Fast memory timing" Margin="0,14,0,0"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- Precision Boost Overdrive + per-core Curve Optimizer -->
+                <Border Grid.Column="2" Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold"
+                                   Text="Precision Boost Overdrive"/>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Margin="0,2,0,8"
+                                   Text="Writes Precision Boost Overdrive + per-core Curve Optimizer into AMD BIOS from Windows (Ryzen Master mailbox). Approve UAC. Reboot after a successful BIOS write."
+                                   TextWrapping="Wrap"/>
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnPboApply" Content="Apply session" Style="{StaticResource AccentButton}" Click="OnPboApply"/>
+                                <Button Grid.Column="2" x:Name="BtnPboBios" Content="Write to BIOS" Click="OnPboBios"/>
+                            </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnPboTune" Content="Auto-tune CO" Style="{StaticResource GoodButton}" Click="OnPboTune"/>
+                                <Button Grid.Column="2" x:Name="BtnPboRead" Content="Read SMU" Click="OnPboRead"/>
+                            </Grid>
+                            <TextBlock x:Name="TxtPboBackend" Style="{StaticResource Label}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                       Text="SMU: connecting…"/>
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,0,0,8">
+                            <StackPanel>
+                                <CheckBox x:Name="ChkPbo" Content="PBO enabled" IsChecked="True"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="PPT"/>
+                                    <TextBlock x:Name="LblPpt" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="142 W"/>
+                                </Grid>
+                                <Slider x:Name="SldPpt" Minimum="88" Maximum="720" TickFrequency="1" IsSnapToTickEnabled="True" Value="142" ValueChanged="OnPboSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="TDC"/>
+                                    <TextBlock x:Name="LblTdc" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="110 A"/>
+                                </Grid>
+                                <Slider x:Name="SldTdc" Minimum="70" Maximum="480" TickFrequency="1" IsSnapToTickEnabled="True" Value="110" ValueChanged="OnPboSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="EDC"/>
+                                    <TextBlock x:Name="LblEdc" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="170 A"/>
+                                </Grid>
+                                <Slider x:Name="SldEdc" Minimum="90" Maximum="640" TickFrequency="1" IsSnapToTickEnabled="True" Value="170" ValueChanged="OnPboSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="boost override"/>
+                                    <TextBlock x:Name="LblBoost" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="+200 MHz"/>
+                                </Grid>
+                                <Slider x:Name="SldBoost" Minimum="0" Maximum="200" TickFrequency="25" IsSnapToTickEnabled="True" Value="200" ValueChanged="OnPboSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="PBO SCALAR"/>
+                                    <TextBlock x:Name="LblScalar" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="1x"/>
+                                </Grid>
+                                <Slider x:Name="SldScalar" Minimum="1" Maximum="10" TickFrequency="1" IsSnapToTickEnabled="True" Value="1" ValueChanged="OnPboSlider"/>
+                                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,12,0,4" Text="per-core Curve Optimizer"/>
+                                <TextBlock Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                           Text="Negative = undervolt. Auto-tune searches each logical core from per-core stability."/>
+                                <StackPanel x:Name="CorePanel"/>
+
+                                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="RAM timings (BIOS)"/>
+                                <TextBlock Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                           Text="DDR5 via AMD BIOS mailbox (same as Ryzen Master). Write RAM BIOS then reboot. EXPO off for manual primaries."/>
+                                <CheckBox x:Name="ChkExpo" Content="EXPO profile" Margin="0,0,0,8"/>
+                                <Grid Margin="0,4,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="MEM CLOCK"/>
+                                    <TextBlock x:Name="LblRamClk" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="3000 MHz (DDR5-6000)"/>
+                                </Grid>
+                                <Slider x:Name="SldRamClk" Minimum="2000" Maximum="4000" TickFrequency="50" IsSnapToTickEnabled="True" Value="3000" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="VDDIO"/>
+                                    <TextBlock x:Name="LblVddio" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="1200 mV"/>
+                                </Grid>
+                                <Slider x:Name="SldVddio" Minimum="1100" Maximum="1450" TickFrequency="10" IsSnapToTickEnabled="True" Value="1200" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="tCL"/>
+                                    <TextBlock x:Name="LblTcl" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="36"/>
+                                </Grid>
+                                <Slider x:Name="SldTcl" Minimum="26" Maximum="40" TickFrequency="1" IsSnapToTickEnabled="True" Value="36" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="tRCD"/>
+                                    <TextBlock x:Name="LblTrcd" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="36"/>
+                                </Grid>
+                                <Slider x:Name="SldTrcd" Minimum="26" Maximum="40" TickFrequency="1" IsSnapToTickEnabled="True" Value="36" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="tRP"/>
+                                    <TextBlock x:Name="LblTrp" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="36"/>
+                                </Grid>
+                                <Slider x:Name="SldTrp" Minimum="26" Maximum="40" TickFrequency="1" IsSnapToTickEnabled="True" Value="36" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="tRAS"/>
+                                    <TextBlock x:Name="LblTras" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="76"/>
+                                </Grid>
+                                <Slider x:Name="SldTras" Minimum="52" Maximum="90" TickFrequency="1" IsSnapToTickEnabled="True" Value="76" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,8,0,4">
+                                    <TextBlock Style="{StaticResource Label}" Text="tRFC"/>
+                                    <TextBlock x:Name="LblTrfc" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="560"/>
+                                </Grid>
+                                <Slider x:Name="SldTrfc" Minimum="400" Maximum="900" TickFrequency="8" IsSnapToTickEnabled="True" Value="560" ValueChanged="OnRamSlider"/>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="6"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="BtnRamRead" Content="Read RAM" Click="OnRamRead"/>
+                                    <Button Grid.Column="2" x:Name="BtnRamWrite" Content="Write RAM BIOS" Style="{StaticResource AccentButton}" Click="OnRamWrite"/>
+                                </Grid>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+
+                <!-- Auto + log -->
+                <Grid Grid.Column="4">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock FontSize="15" FontWeight="SemiBold" Text="Auto overclock / undervolt"/>
+                            <TextBlock Style="{StaticResource Label}" Margin="0,2,0,12"
+                                       Text="One click: restore stock, benchmark, tune GPU + CPU, benchmark again. Shows faster / cooler / less power."/>
+                            <Button x:Name="BtnOptimize" Content="Optimize this PC" Style="{StaticResource AccentButton}"
+                                    Margin="0,0,0,12" Click="OnOptimize"/>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="16"/>
+                                    <ColumnDefinition Width="220"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource Label}" Text="GOAL"/>
+                                    <ComboBox x:Name="CmbGoal" Margin="0,4,0,0" SelectedIndex="0">
+                                        <ComboBoxItem Content="Balanced"/>
+                                        <ComboBoxItem Content="Performance"/>
+                                        <ComboBoxItem Content="Efficiency"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <Grid>
+                                        <TextBlock Style="{StaticResource Label}" Text="SECONDS / STEP"/>
+                                        <TextBlock x:Name="LblSeconds" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="40 s"/>
+                                    </Grid>
+                                    <Slider x:Name="SldSeconds" Minimum="20" Maximum="90" Value="40" TickFrequency="5" IsSnapToTickEnabled="True" ValueChanged="OnSeconds"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <CheckBox x:Name="ChkSkipVram" Content="Skip VRAM search (faster)" Margin="0,10,0,4"/>
+                            <CheckBox x:Name="ChkApplyOnStart" Content="Apply saved GPU + CPU on launch" IsChecked="True" Click="OnSettingsChanged"/>
+                            <CheckBox x:Name="ChkStartWithWindows" Content="Start with Windows" Click="OnSettingsChanged"/>
+                            <CheckBox x:Name="ChkTray" Content="Minimize to tray" IsChecked="True" Click="OnSettingsChanged" Margin="0,0,0,12"/>
+
+                            <UniformGrid Columns="3" Rows="3" Margin="0,0,0,10">
+                                <Button x:Name="BtnAutoGpu" Content="Auto GPU UV + OC" Style="{StaticResource AccentButton}" Margin="0,0,8,8" Click="OnAutoGpu"/>
+                                <Button x:Name="BtnAmdUv" Content="AMD auto undervolt" Margin="0,0,8,8" Click="OnAmdAuto"/>
+                                <Button x:Name="BtnStop" Content="Stop" Style="{StaticResource DangerButton}" Margin="0,0,0,8" Click="OnStop" IsEnabled="False"/>
+                                <Button x:Name="BtnStressGpu" Content="Stress GPU" Margin="0,0,8,8" Click="OnStressGpu"/>
+                                <Button x:Name="BtnStressCpu" Content="Stress CPU" Margin="0,0,8,8" Click="OnStressCpu"/>
+                                <Button x:Name="BtnSoak" Content="Soak 3 min" Margin="0,0,0,8" Click="OnSoak"/>
+                                <Button x:Name="BtnPerCore" Content="Per-core CPU" Margin="0,0,8,0" Click="OnPerCore"/>
+                                <Button x:Name="BtnApplyProfile" Content="Apply GPU + CPU" Margin="0,0,8,0" Click="OnApplyProfile"/>
+                                <Button x:Name="BtnCpuUnder" Content="CPU cap 95%" Margin="0" Click="OnCpuCap"/>
+                            </UniformGrid>
+                            <UniformGrid Columns="2" Rows="1" Margin="0,0,0,8">
+                                <Button x:Name="BtnBenchBase" Content="Bench baseline" Margin="0,0,8,0" Click="OnBenchBaseline"/>
+                                <Button x:Name="BtnBenchNow" Content="Bench current" Click="OnBenchCurrent"/>
+                            </UniformGrid>
+                            <TextBlock x:Name="TxtBench" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
+                                       Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer → tuned bench. CPU PPT from Ryzen Master; GPU board power from ADLX. No extra tools."/>
+                            <TextBlock x:Name="TxtCores" Style="{StaticResource Label}" Margin="0,0,0,8" Text="Per-core CO: not run yet. Failed cores need a weaker BIOS Curve Optimizer offset." TextWrapping="Wrap"/>
+
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ProgressBar x:Name="Bar" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" x:Name="TxtStep" Style="{StaticResource Label}" Text="idle" VerticalAlignment="Center"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="2" Style="{StaticResource Card}" Padding="0">
+                        <DockPanel>
+                            <Grid DockPanel.Dock="Top" Margin="14,12,14,8">
+                                <TextBlock FontSize="15" FontWeight="SemiBold" Text="Log"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Content="Clear" Padding="10,5" Click="OnClearLog"/>
+                                </StackPanel>
+                            </Grid>
+                            <ScrollViewer x:Name="LogScroll" Margin="4,0,4,8" VerticalScrollBarVisibility="Auto">
+                                <TextBox x:Name="TxtLog"
+                                         IsReadOnly="True"
+                                         BorderThickness="0"
+                                         Background="Transparent"
+                                         Foreground="#C5D0DC"
+                                         FontFamily="{StaticResource MonoFont}"
+                                         FontSize="12"
+                                         TextWrapping="Wrap"
+                                         AcceptsReturn="True"
+                                         Padding="10,0,10,10"/>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>
