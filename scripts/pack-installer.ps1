@@ -43,7 +43,7 @@ if (-not $SkipPublish) {
 }
 
 if (-not (Test-Path (Join-Path $distApp "ZenLoop.exe"))) {
-    throw "Missing dist\ZenLoop\ZenLoop.exe — run publish.ps1 first or omit -SkipPublish."
+    throw "Missing dist\ZenLoop\ZenLoop.exe - run publish.ps1 first or omit -SkipPublish."
 }
 
 $built = @()
@@ -111,7 +111,7 @@ if ($Msix) {
             Copy-Item $src $dst -Force
         }
         else {
-            Write-Warning "Missing branded asset $src — writing minimal 1x1 PNG fallback."
+            Write-Warning "Missing branded asset $src - writing minimal 1x1 PNG fallback."
             $pngBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
             [IO.File]::WriteAllBytes($dst, $pngBytes)
         }
@@ -129,7 +129,7 @@ if ($Msix) {
     if (Test-Path $msixPath) { Remove-Item $msixPath -Force }
 
     if (-not $makeappx) {
-        Write-Warning "MakeAppx.exe not found (Windows SDK). Staged layout left at $stage — pack later with MakeAppx pack /d `"$stage`" /p `"$msixPath`" /o"
+        Write-Warning "MakeAppx.exe not found (Windows SDK). Staged layout left at $stage - pack later with MakeAppx pack /d `"$stage`" /p `"$msixPath`" /o"
     }
     else {
         Write-Host "Packing MSIX with $makeappx..."

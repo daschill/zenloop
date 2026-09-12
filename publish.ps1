@@ -69,14 +69,14 @@ Export / Import tune pack saves GPU + CPU + RAM profiles as one JSON backup.
 Needs AMD Software (Adrenalin) for the GPU. Needs AMD Ryzen Master installed for CPU/BIOS
 (same signed driver path as other AMD Windows tuners). No HWiNFO or Python required.
 
-Not affiliated with AMD. Overclocking can damage hardware — use at your own risk.
+Not affiliated with AMD. Overclocking can damage hardware - use at your own risk.
 Intel/NVIDIA: detect + multi-vendor capability matrix; Apply only when a public signed API
 resolves (e.g. NVAPI power policies). No WinRing0 / raw SMU. Never fake Apply success.
 
 Code signing: unsigned by default. If SIGNING_CERT_* secrets are set, publish.ps1 runs
 scripts\sign-artifacts.ps1 (see docs\CODE-SIGNING.md). SmartScreen may warn on unsigned builds.
 
-Recovery: see RECOVERY.md (Adrenalin Default, clear CO, CLR_CMOS). About → No opens the guide.
+Recovery: see RECOVERY.md (Adrenalin Default, clear CO, CLR_CMOS). About -> No opens the guide.
 RTSS OSD: RTSS-OSD.md. Metrics JSON: METRICS-EXPORT.md. UV bake-off: UV-BAKEOFF.md.
 Optional installers: scripts\pack-installer.ps1 (Inno / MSIX). Update check: About dialog.
 "@
@@ -86,7 +86,7 @@ $zip = Join-Path $Root "dist\ZenLoop-$version-win-x64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $out "*") -DestinationPath $zip -Force
 
-# Optional Authenticode — no-op when SIGNING_CERT_* absent (unsigned path unchanged).
+# Optional Authenticode - no-op when SIGNING_CERT_* absent (unsigned path unchanged).
 $signScript = Join-Path $Root "scripts\sign-artifacts.ps1"
 if (Test-Path $signScript) {
     powershell -ExecutionPolicy Bypass -File $signScript -DistDir $out

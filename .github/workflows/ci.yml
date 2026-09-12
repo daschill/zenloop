@@ -50,10 +50,11 @@ jobs:
           SIGNING_TIMESTAMP_URL: ${{ secrets.SIGNING_TIMESTAMP_URL }}
         shell: pwsh
         run: |
-          # No-op when secrets absent — unsigned path unchanged.
+          # No-op when secrets absent - unsigned path unchanged.
           # Full publish+sign is ops; here we only exercise the script against empty dist.
+          # Invoke via pwsh so UTF-8 scripts parse cleanly on windows-latest.
           New-Item -ItemType Directory -Force -Path dist\ZenLoop | Out-Null
-          powershell -ExecutionPolicy Bypass -File .\scripts\sign-artifacts.ps1 -DistDir dist\ZenLoop
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\sign-artifacts.ps1 -DistDir dist\ZenLoop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host "Sign step finished (signed only if SIGNING_CERT_* present). See docs/CODE-SIGNING.md."
 

@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Unsigned path is unchanged when cert secrets are absent (exit 0, no SignTool).
-  When a PFX is available, signs ZenLoop.exe, native helpers, zip contents, and optional
+  When a PFX is available, signs ZenLoop.exe, native helpers, and optional
   Setup.exe / MSIX with SignTool + RFC3161 timestamp.
 
 .PARAMETER DistDir
@@ -62,7 +62,7 @@ function Find-SignTool {
 
 $material = Get-SigningMaterial
 if (-not $material) {
-    Write-Host "SIGNING_CERT_* not set — leaving artifacts unsigned (expected for open builds)."
+    Write-Host "SIGNING_CERT_* not set - leaving artifacts unsigned (expected for open builds)."
     Write-Host "See docs/CODE-SIGNING.md for EV certificate setup."
     exit 0
 }
@@ -83,11 +83,11 @@ $targets = New-Object System.Collections.Generic.List[string]
 if (Test-Path $DistDir) {
     foreach ($name in @("ZenLoop.exe", "zenloop-hw.exe", "zenloop-cpu.exe")) {
         $p = Join-Path $DistDir $name
-        if (Test-Path $p) { $targets.Add($p) }
+        if (Test-Path $p) { [void]$targets.Add($p) }
     }
 }
 foreach ($f in $ExtraFiles) {
-    if ($f -and (Test-Path $f)) { $targets.Add((Resolve-Path $f).Path) }
+    if ($f -and (Test-Path $f)) { [void]$targets.Add((Resolve-Path $f).Path) }
 }
 
 if ($targets.Count -eq 0) {
