@@ -1,5 +1,5 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "url": "https://github.com/daschill/zenloop/releases/latest",
-  "notes": "1.6.0: Curve Shaper + DRAM lab (#14), RTSS OSD + UV bake-off (#15), multi-vendor capability matrix + optional EV signing (#16)."
+  "notes": "1.6.1: Honest Curve Shaper CanApply (export≠ABI) + AMD box Optimize/bake-off preflight + probe diagnostics; never invent bands."
 }

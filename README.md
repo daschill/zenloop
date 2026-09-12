@@ -8,7 +8,7 @@ Download, double-click `ZenLoop.exe`, approve Administrator once, accept the fir
 
 Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON backup (Adrenalin/RM-style). **Multi-vendor:** Intel/NVIDIA are detected and shown in a capability matrix; Apply only runs when a public signed API resolves (e.g. NVAPI power policies via `nvapi64.dll`). No WinRing0 / raw SMU. Never fake Apply success.
 
-**Curve Shaper** (Ryzen 9000): exhaustive Platform/Device C-export probe (named + PE table). If no real API, the UI stays disabled with an honest reason and points at signed **PBO + Curve Optimizer** instead — never invents bands. See `docs/CURVE-SHAPER.md`.
+**Curve Shaper** (Ryzen 9000): exhaustive Platform/Device C-export probe (named + PE table). `curve_shaper` means CanApply (export **and** published ABI); export-found alone keeps Apply disabled with probe diagnostics and points at signed **PBO + Curve Optimizer** — never invents bands. See `docs/CURVE-SHAPER.md`.
 
 **DRAM lab**: ZenTimings-class read/guidance — primaries + secondaries when readable, FCLK/UCLK/MCLK, export JSON, stress advice. No fake DDR5 calculator tables. No WinRing0. See `docs/DRAM-LAB.md`.
 

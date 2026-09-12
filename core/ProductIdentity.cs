@@ -47,7 +47,7 @@ public static class ProductIdentity
             $"{Name} {Version}\n{Tagline}\n\n{Copyright}\n{NotAffiliated}\n\n" +
             "Primary: AMD ADLX (GPU) + Ryzen Master Platform/Device (CPU/BIOS/RAM).\n" +
             "Multi-vendor: Intel/NVIDIA detect + capability matrix; Apply only via public signed APIs when available (e.g. NVAPI power policies on nvapi64.dll).\n" +
-            "Curve Shaper: exhaustive Platform/Device probe; gated without invented bands (PBO/CO alternative).\n" +
+            "Curve Shaper: exhaustive Platform/Device probe; CanApply only with published C ABI (export-found ≠ Apply; PBO/CO alternative).\n" +
             "DRAM lab: ZenTimings-class read/guidance + export (no fake DDR5 tables, no WinRing0).\n" +
             $"Metrics JSON: {MetricsSnapshotExport.DefaultPath}\n" +
             $"RTSS OSD: slot owner {RtssOsdBridge.OwnerId}; MMF {RtssOsdBridge.ZenLoopMapName}; text {RtssOsdBridge.DefaultOsdTextPath}\n" +

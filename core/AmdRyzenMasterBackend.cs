@@ -156,7 +156,7 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
 
     /// <summary>
     /// Curve Shaper apply is refused unless capabilities report a real C export
-    /// with a published ABI. Never invents band offsets.
+    /// with a published ABI (<paramref name="available"/>). Never invents band offsets.
     /// </summary>
     public ApplyResult ApplyCurveShaper(CurveShaperProfile profile, bool available)
     {
@@ -174,6 +174,20 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
             };
         }
 
+        // Even with a published ABI, refuse empty band lists — no invented defaults.
+        if (profile.Bands.Count == 0 && profile.Enabled)
+        {
+            return new ApplyResult
+            {
+                SessionApplied = false,
+                BiosPersisted = false,
+                CoWritten = false,
+                Backend = Name,
+                Error = CurveShaperSupport.EmptyBandsRefuseNote,
+                Note = CurveShaperAlternative.Summary,
+            };
+        }
+
         try
         {
             var args = new List<string> { "cs-apply", "--enabled", profile.Enabled ? "1" : "0" };
@@ -187,6 +201,14 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
             }
             var json = _run(args);
             var r = ParseCurveShaperApply(json);
+            // Never treat a helper error / ok:false as success.
+            if (!string.IsNullOrEmpty(r.Error) || !r.SessionApplied)
+            {
+                r.SessionApplied = false;
+                r.BiosPersisted = false;
+                if (string.IsNullOrEmpty(r.Error))
+                    r.Error = CurveShaperSupport.SignatureUnknownNote;
+            }
             // Session-style CS write still goes through BiosWriteGuard hygiene (no silent success).
             return BiosWriteGuard.EnsureNoSilentBiosSuccess(
                 r,

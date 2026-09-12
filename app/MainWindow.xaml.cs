@@ -58,6 +58,7 @@ public partial class MainWindow : Window
                 MessageBox.Show(this, prereq.UserGuidance(), "ZenLoop — missing AMD software",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
             }
+            ApplyAmdBoxButtonState(null);
 
             _hw = await Task.Run(() => new HwClient());
             _tune = new AutotuneService(_hw);
@@ -328,11 +329,18 @@ public partial class MainWindow : Window
         if (!caps.BoostOverride)
             LblBoost.Text = $"+{(int)SldBoost.Value} MHz (not applied)";
         if (TxtCurveShaper is not null)
-            TxtCurveShaper.Text = caps.CurveShaper
-                ? "Curve Shaper: export probed — apply still requires a published C ABI (BiosWriteGuard)."
-                : caps.CurveShaperReason;
+        {
+            if (caps.CurveShaper)
+                TxtCurveShaper.Text = "Curve Shaper: published ABI ready — Apply enabled under BiosWriteGuard.";
+            else if (caps.CurveShaperExportFound)
+                TxtCurveShaper.Text = CurveShaperSupport.SignatureUnknownNote + " "
+                    + caps.CurveShaperProbe.SummaryLine();
+            else
+                TxtCurveShaper.Text = caps.CurveShaperReason;
+        }
         if (BtnCurveShaperApply is not null)
         {
+            // CanApply only — export-found alone never enables Apply.
             BtnCurveShaperApply.IsEnabled = caps.CurveShaper;
             BtnCurveShaperApply.Opacity = caps.CurveShaper ? 1.0 : 0.55;
         }
@@ -342,14 +350,47 @@ public partial class MainWindow : Window
                 ? CurveShaperSupport.BiosNote
                 : CurveShaperAlternative.Guidance(_tune?.LoadCpuPboProfile());
         }
+        ApplyAmdBoxButtonState(caps);
         if (!caps.HelperAvailable && !string.IsNullOrEmpty(caps.Error))
             Log("Control: " + caps.Error);
         else if (!caps.BiosPbo)
             Log("BIOS persist unavailable (CDefaultBIOS not bound). Session SMU only until reboot.");
         if (!caps.BoostOverride)
             Log(BiosWriteGuard.BoostUnavailableNote);
+        if (caps.CurveShaperProbe.PlatformExports > 0 || caps.CurveShaperProbe.DeviceExports > 0
+            || caps.CurveShaperExportFound)
+            Log(caps.CurveShaperProbe.SummaryLine());
         if (!caps.CurveShaper)
-            Log(CurveShaperSupport.UnavailableShort + " — " + CurveShaperAlternative.UiHint());
+        {
+            if (caps.CurveShaperExportFound)
+                Log(CurveShaperSupport.SignatureUnknownNote + " — " + CurveShaperAlternative.UiHint());
+            else
+                Log(CurveShaperSupport.UnavailableShort + " — " + CurveShaperAlternative.UiHint());
+        }
+    }
+
+    void ApplyAmdBoxButtonState(WindowsControlCapabilities? caps)
+    {
+        var prereq = AmdPrerequisites.Probe();
+        var pre = OptimizePreflight.Evaluate(prereq, caps, support: null, flow: "Optimize");
+        bool ready = pre.CanProceed;
+        if (BtnOptimize is not null)
+        {
+            BtnOptimize.IsEnabled = ready;
+            BtnOptimize.Opacity = ready ? 1.0 : 0.55;
+            BtnOptimize.ToolTip = ready
+                ? "One-click Optimize: GPU ADLX + per-core Curve Optimizer (not Curve Shaper)."
+                : pre.Message;
+        }
+        if (BtnUvBakeOff is not null)
+        {
+            bool bakeOk = prereq.AdrenalinPresent;
+            BtnUvBakeOff.IsEnabled = bakeOk;
+            BtnUvBakeOff.Opacity = bakeOk ? 1.0 : 0.55;
+            BtnUvBakeOff.ToolTip = bakeOk
+                ? "Stock vs ZenLoop vs optional Adrenalin profile bake-off (live ADLX)."
+                : "Needs AMD Software (Adrenalin) / amdadlx64.dll.";
+        }
     }
 
     static string SmuStatusLine(string json)
@@ -706,10 +747,14 @@ public partial class MainWindow : Window
     {
         if (_caps is null || !_caps.CurveShaper)
         {
-            MessageBox.Show(this,
-                CurveShaperSupport.UnavailableReason + "\n\n" + CurveShaperAlternative.Guidance(_tune?.LoadCpuPboProfile()),
-                "Curve Shaper",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            var body = (_caps?.CurveShaperExportFound == true
+                    ? CurveShaperSupport.SignatureUnknownNote
+                    : CurveShaperSupport.UnavailableReason)
+                + "\n\n" + CurveShaperAlternative.Guidance(_tune?.LoadCpuPboProfile());
+            if (_caps?.CurveShaperProbe is { } probe
+                && (probe.PlatformExports > 0 || probe.DeviceExports > 0 || probe.ExportFound))
+                body += "\n\n" + probe.SummaryLine();
+            MessageBox.Show(this, body, "Curve Shaper", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (!EnsureEulaAccepted()) return;
@@ -719,12 +764,16 @@ public partial class MainWindow : Window
         await RunExclusive("Applying Curve Shaper…", async ct =>
         {
             var surface = _smu.ControlSurface();
-            var profile = new CurveShaperProfile { Enabled = true };
+            // Never invent bands — require a prior live read with real band data.
+            var live = await Task.Run(() => _smu.ReadCurveShaper(available: true), ct);
+            if (live is null || live.Bands.Count == 0)
+                throw new HwException(CurveShaperSupport.EmptyBandsRefuseNote
+                    + "\n" + CurveShaperAlternative.UiHint());
             var caps = _caps;
-            var r = await Task.Run(() => surface.ApplyCurveShaper(profile, caps), ct);
+            var r = await Task.Run(() => surface.ApplyCurveShaper(live, caps), ct);
             Log($"Curve Shaper apply session={r.SessionApplied} {(r.Error ?? "ok")}");
-            if (!string.IsNullOrEmpty(r.Error))
-                throw new HwException(r.Error);
+            if (!r.SessionApplied || !string.IsNullOrEmpty(r.Error))
+                throw new HwException(r.Error ?? CurveShaperSupport.SignatureUnknownNote);
         });
     }
 
@@ -1247,18 +1296,21 @@ public partial class MainWindow : Window
     {
         if (_tune is null) return;
         if (!EnsureEulaAccepted()) return;
-        if (_last is not null)
+
+        _cpuName ??= SystemHardwareNames.TryReadProcessorName();
+        PlatformSupport? support = _last is not null
+            ? PlatformSupport.FromNames(_last.GpuName, _cpuName)
+            : null;
+        var prereq = await Task.Run(AmdPrerequisites.Probe);
+        var preflight = OptimizePreflight.Evaluate(prereq, _caps, support, flow: "Optimize");
+        if (preflight.HardBlock)
         {
-            _cpuName ??= SystemHardwareNames.TryReadProcessorName();
-            var support = PlatformSupport.FromNames(_last.GpuName, _cpuName);
-            if (!support.OptimizePathSupported)
-            {
-                MessageBox.Show(this,
-                    support.Message + "\n\nOne-click Optimize stays AMD ADLX + Ryzen Master. See the multi-vendor capability matrix for real CanApply flags.",
-                    "Optimize path", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
+            MessageBox.Show(this, preflight.Message, preflight.Title,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            ApplyAmdBoxButtonState(_caps);
+            return;
         }
+
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = (int)SldSeconds.Value;
 
@@ -1277,13 +1329,18 @@ public partial class MainWindow : Window
                 _tune.ClearOptimizeCheckpoint();
         }
 
+        var warnBlock = preflight.Warnings.Count > 0
+            ? "\n\nPreflight notes:\n- " + string.Join("\n- ", preflight.Warnings)
+            : "\n\n" + OptimizePreflight.OptimizeUsesCoNotCs;
+
         if (!resume && MessageBox.Show(this,
                 "ZenLoop will:\n"
                 + "1. Restore stock GPU (and session Curve Optimizer = 0 if SMU is live)\n"
                 + "2. Benchmark stock (CPU + RAM + GPU)\n"
                 + "3. Auto undervolt/overclock the GPU\n"
                 + "4. Auto-tune per-core Curve Optimizer (with all-core confirm)\n"
-                + "5. Benchmark again and show faster / cooler / less power\n\n"
+                + "5. Benchmark again and show faster / cooler / less power\n"
+                + warnBlock + "\n\n"
                 + $"{ZenLoop.Core.ClockSearch.DescribeGoal(goal)}\n"
                 + $"{secs}s per step\nClose games first. This takes several minutes.\n\n"
                 + ProductIdentity.ShortDisclaimer,
@@ -1487,6 +1544,16 @@ public partial class MainWindow : Window
     async void OnUvBakeOff(object sender, RoutedEventArgs e)
     {
         if (_tune is null || _hw is null) return;
+        var prereq = await Task.Run(AmdPrerequisites.Probe);
+        var bakePre = OptimizePreflight.Evaluate(prereq, _caps, support: null, flow: "UV bake-off");
+        if (!prereq.AdrenalinPresent)
+        {
+            MessageBox.Show(this, prereq.UserGuidance(), "UV bake-off — missing Adrenalin",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            ApplyAmdBoxButtonState(_caps);
+            return;
+        }
+
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = Math.Max(10, (int)SldSeconds.Value);
 
@@ -1497,6 +1564,9 @@ public partial class MainWindow : Window
                 + "3. Optional: import an Adrenalin/ZenLoop GPU profile JSON and bench\n\n"
                 + "Writes %LocalAppData%\\ZenLoop\\bakeoff\\ report (JSON + Markdown).\n"
                 + "Close games first. Continue?\n\n"
+                + (bakePre.Warnings.Count > 0
+                    ? "Notes:\n- " + string.Join("\n- ", bakePre.Warnings) + "\n\n"
+                    : "")
                 + "Yes = include optional Adrenalin profile file picker\n"
                 + "No = stock vs ZenLoop only\n"
                 + "Cancel = abort",
@@ -1740,6 +1810,11 @@ public partial class MainWindow : Window
             LoadRamToUi(pack.Ram);
             TxtRamGuidance.Text = RamTimingGuidance.Guidance(pack.Ram);
         }
+        if (pack.CurveShaper is not null)
+        {
+            var refuse = OptimizePreflight.FormatCurveShaperPackRefuse(pack.CurveShaper, _caps);
+            Log(CurveShaperSupport.PackRefuseShort + " " + refuse);
+        }
 
         async Task Work(CancellationToken ct)
         {
@@ -1753,7 +1828,7 @@ public partial class MainWindow : Window
                 var r = await Task.Run(() => _smu.Apply(pack.Cpu, PersistMode.Session), ct);
                 Log($"Hot CPU apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
                 if (!r.SessionApplied && r.Error is string err)
-                    throw new HwException(err);
+                    throw new HwException(AmdPrerequisites.FormatHelperError(err));
             }
         }
 
