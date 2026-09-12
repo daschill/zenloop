@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -18,6 +19,9 @@ public partial class MainWindow : Window
     TrayService? _tray;
     bool _forceClose;
     readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromSeconds(1) };
+    readonly DispatcherTimer _hotApplyPoll = new() { Interval = TimeSpan.FromSeconds(1.5) };
+    readonly AppProfileHotApplySession _hotApply = new();
+    bool _hotApplyRunning;
     readonly Queue<double> _clockHist = new();
     readonly Queue<double> _tempHist = new();
     CancellationTokenSource? _cts;
@@ -26,16 +30,22 @@ public partial class MainWindow : Window
     HwSnapshot? _last;
     readonly List<Slider> _coSliders = new();
     readonly List<TextBlock> _coLabels = new();
+    WindowsControlCapabilities? _caps;
+    WindowsControlSurface? _control;
 
     public MainWindow()
     {
         InitializeComponent();
+        Title = ProductIdentity.WindowTitle;
+        TxtVersion.Text = "v" + ProductIdentity.Version;
+        TxtFooterRight.Text = $"v{ProductIdentity.Version}  ·  GPU ADLX  ·  CPU/BIOS AMD Ryzen Master";
         _poll.Tick += async (_, _) => await PollAsync();
+        _hotApplyPoll.Tick += async (_, _) => await HotApplyTickAsync();
     }
 
     async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        Log("Starting ADLX helper…");
+        Log($"{ProductIdentity.Name} {ProductIdentity.Version} — {ProductIdentity.Tagline}");
         try
         {
             var prereq = await Task.Run(AmdPrerequisites.Probe);
@@ -49,8 +59,13 @@ public partial class MainWindow : Window
             _hw = await Task.Run(() => new HwClient());
             _tune = new AutotuneService(_hw);
             _smu = SmuService.CreateProduction();
+            _control = _smu.ControlSurface();
             _settings = _tune.LoadSettings();
             LoadSettingsToUi();
+            if (!EnsureEulaAccepted(forcePrompt: !_settings.HasAcceptedCurrentEula))
+            {
+                Log("EULA not accepted — Optimize and BIOS/SMU writes stay locked until you accept in About.");
+            }
             _tray = new TrayService(this);
             BuildCoreSliders();
             SetAdminPill();
@@ -72,14 +87,18 @@ public partial class MainWindow : Window
             {
                 LoadRamToUi(ram);
                 Log($"Loaded RAM timings DDR5-{ram.DataRateMts} {ram.Tcl}-{ram.Trcd}-{ram.Trp}-{ram.Tras}");
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance(ram);
             }
-            if (_settings.ApplyProfilesOnStart)
-            {
-                await TryApplyStartupProfileAsync();
-                await TryApplyCpuStartupAsync();
-            }
+            else
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance();
+            if (_settings.ApplyProfilesOnStart && _settings.HasAcceptedCurrentEula)
+                await TryReapplySavedTunesOnStartupAsync();
             RefreshBenchText();
+            RefreshHistoryText();
+            RefreshAppProfilesText();
+            MaybeOfferOptimizeResume();
             _poll.Start();
+            _hotApplyPoll.Start();
             if (prereq.AllReady)
                 SetStatus("LIVE", true);
         }
@@ -101,6 +120,7 @@ public partial class MainWindow : Window
             return;
         }
         _poll.Stop();
+        _hotApplyPoll.Stop();
         _tray?.Dispose();
         if (_busy)
         {
@@ -132,6 +152,9 @@ public partial class MainWindow : Window
         ChkApplyOnStart.IsChecked = _settings.ApplyProfilesOnStart;
         ChkStartWithWindows.IsChecked = _settings.StartWithWindows;
         ChkTray.IsChecked = _settings.MinimizeToTray;
+        if (ChkAppAutoApply is not null)
+            ChkAppAutoApply.IsChecked = _settings.AppProfileAutoApply;
+        ChkStartupUpdateCheck.IsChecked = _settings.CheckForUpdatesOnStartup;
     }
 
     void OnSettingsChanged(object sender, RoutedEventArgs e)
@@ -139,9 +162,40 @@ public partial class MainWindow : Window
         _settings.ApplyProfilesOnStart = ChkApplyOnStart.IsChecked == true;
         _settings.StartWithWindows = ChkStartWithWindows.IsChecked == true;
         _settings.MinimizeToTray = ChkTray.IsChecked == true;
+        if (ChkAppAutoApply is not null)
+            _settings.AppProfileAutoApply = ChkAppAutoApply.IsChecked == true;
+        _settings.CheckForUpdatesOnStartup = ChkStartupUpdateCheck.IsChecked == true;
         _tune?.SaveSettings(_settings);
         try { WindowsStartup.SetEnabled(_settings.StartWithWindows); }
         catch (Exception ex) { Log("Start with Windows: " + ex.Message); }
+    }
+
+    void OnAppAutoApplyChanged(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        var on = ChkAppAutoApply.IsChecked == true;
+        _settings.AppProfileAutoApply = on;
+        _tune.SaveSettings(_settings);
+        var store = _tune.LoadAppProfiles();
+        store.AutoApply = on;
+        if (on) store.Enabled = true;
+        _tune.SaveAppProfiles(store);
+        if (!on)
+            _hotApply.ClearApplied();
+        RefreshAppProfilesText();
+        Log(on
+            ? "Per-app auto-apply enabled (foreground watch, 2.5s debounce; skipped while Optimize runs)."
+            : "Per-app auto-apply disabled.");
+    }
+
+    /// <summary>Called from App startup when optional silent update check finds a newer version.</summary>
+    public void NotifySilentUpdateAvailable(UpdateChecker.Result result)
+    {
+        if (!result.UpdateAvailable) return;
+        var text = StartupUpdateCheck.FormatTrayText(result);
+        Log(text);
+        TxtFooter.Text = text.Length > 120 ? text[..120] + "…" : text;
+        _tray?.ShowBalloon(StartupUpdateCheck.TrayTitle, text);
     }
 
     async Task RefreshSmuAsync()
@@ -149,9 +203,10 @@ public partial class MainWindow : Window
         if (_smu is null) return;
         try
         {
+            string? info = null;
             if (_smu.Backend is AmdRyzenMasterBackend amd)
             {
-                var info = await Task.Run(() => amd.InfoJson());
+                info = await Task.Run(() => amd.InfoJson());
                 TxtPboBackend.Text = SmuStatusLine(info);
                 var live = CpuSmuProtocol.TryParseProfile(info);
                 if (live is not null)
@@ -159,11 +214,53 @@ public partial class MainWindow : Window
             }
             else
                 TxtPboBackend.Text = $"SMU: {_smu.BackendName}";
+
+            var gpuProbe = _last is null
+                ? null
+                : GpuControlProbe.FromRanges(
+                    _last.ClockRange is not null || _last.VoltageRange is not null,
+                    _last.Fan is not null);
+            _caps = await Task.Run(() => _smu.ProbeCapabilities(info, gpuProbe));
+            ApplyCapabilityUi(_caps);
         }
         catch (Exception ex)
         {
             TxtPboBackend.Text = "SMU: " + ex.Message;
+            TxtControlCaps.Text = "Capabilities: probe failed — " + ex.Message;
         }
+    }
+
+    void ApplyCapabilityUi(WindowsControlCapabilities caps)
+    {
+        TxtControlCaps.Text = caps.StatusLine();
+        BtnPboApply.IsEnabled = caps.SessionPbo || caps.SessionCo;
+        BtnPboTune.IsEnabled = caps.SessionCo;
+        BtnPboClearSession.IsEnabled = caps.SessionCo || caps.SessionPbo;
+        BtnPboBios.IsEnabled = caps.BiosPbo || caps.BiosCo;
+        BtnPboStockBios.IsEnabled = caps.BiosStockWrite;
+        BtnRamWrite.IsEnabled = caps.BiosRam;
+        BtnRamRead.IsEnabled = caps.BiosRam;
+        SldBoost.IsEnabled = caps.BoostOverride;
+        SldBoost.Opacity = caps.BoostOverride ? 1.0 : 0.55;
+        if (!caps.BoostOverride)
+            LblBoost.Text = $"+{(int)SldBoost.Value} MHz (not applied)";
+        if (TxtCurveShaper is not null)
+            TxtCurveShaper.Text = caps.CurveShaper
+                ? "Curve Shaper: available (RM C export probed)."
+                : caps.CurveShaperReason;
+        if (BtnCurveShaperApply is not null)
+        {
+            BtnCurveShaperApply.IsEnabled = caps.CurveShaper;
+            BtnCurveShaperApply.Opacity = caps.CurveShaper ? 1.0 : 0.55;
+        }
+        if (!caps.HelperAvailable && !string.IsNullOrEmpty(caps.Error))
+            Log("Control: " + caps.Error);
+        else if (!caps.BiosPbo)
+            Log("BIOS persist unavailable (CDefaultBIOS not bound). Session SMU only until reboot.");
+        if (!caps.BoostOverride)
+            Log(BiosWriteGuard.BoostUnavailableNote);
+        if (!caps.CurveShaper)
+            Log(CurveShaperSupport.UnavailableShort);
     }
 
     static string SmuStatusLine(string json)
@@ -187,20 +284,88 @@ public partial class MainWindow : Window
         }
     }
 
-    async Task TryApplyCpuStartupAsync()
+    /// <summary>
+    /// Reliable startup re-apply: GPU + CPU from saved profiles, with one retry and pack fallback.
+    /// </summary>
+    async Task TryReapplySavedTunesOnStartupAsync()
     {
-        if (_tune is null || _smu is null) return;
-        var p = _tune.LoadCpuPboProfile();
-        if (p is null) return;
-        Log($"Applying saved CPU PBO on start (PPT {p.PptWatts} W)…");
-        try
+        if (_tune is null) return;
+        var gpu = _tune.LoadStartupProfile();
+        var cpu = _tune.LoadCpuPboProfile();
+        ProfilePack? pack = null;
+        if (gpu is null && cpu is null)
         {
-            var r = await Task.Run(() => _smu.Apply(p, PersistMode.Session));
-            Log($"CPU start apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+            var fallback = _tune.FindNewestPackFallback();
+            if (fallback is not null)
+            {
+                try
+                {
+                    pack = ProfilePack.TryLoadFile(fallback);
+                    if (pack is not null)
+                    {
+                        Log($"No discrete startup profiles — using pack fallback: {fallback}");
+                        _tune.ApplyProfilePackFiles(pack);
+                        gpu = pack.Gpu ?? _tune.LoadStartupProfile();
+                        cpu = pack.Cpu ?? _tune.LoadCpuPboProfile();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("Pack fallback load failed: " + ex.Message);
+                }
+            }
         }
-        catch (Exception ex)
+
+        var plan = StartupReapply.BuildPlan(gpu is not null, cpu is not null, pack is not null);
+        if (plan is null)
         {
-            Log("CPU startup apply failed: " + ex.Message);
+            Log("Startup re-apply: no saved GPU/CPU profiles or packs.");
+            return;
+        }
+        Log(StartupReapply.Describe(plan));
+
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            bool ok = true;
+            if (gpu is not null)
+            {
+                try
+                {
+                    Log($"Applying saved GPU profile ({gpu.VoltageMv} mV @ {gpu.MaxMhz} MHz)…");
+                    await Task.Run(() => _tune.ApplyProfile(gpu));
+                    Log("GPU startup profile applied.");
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    Log($"GPU startup apply failed (attempt {attempt + 1}): " + ex.Message);
+                }
+            }
+            if (cpu is not null && _smu is not null)
+            {
+                try
+                {
+                    Log($"Applying saved CPU PBO (PPT {cpu.PptWatts} W)…");
+                    var r = await Task.Run(() => _smu.Apply(cpu, PersistMode.Session));
+                    Log($"CPU start apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+                    if (!r.SessionApplied) ok = false;
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    Log($"CPU startup apply failed (attempt {attempt + 1}): " + ex.Message);
+                }
+            }
+            if (ok || !StartupReapply.ShouldRetry(attempt, ok))
+            {
+                if (ok)
+                    await RefreshInfoAsync();
+                else
+                    Log("Startup re-apply did not fully succeed — use Restore last tune after Adrenalin/RM are ready.");
+                return;
+            }
+            Log("Retrying startup re-apply once…");
+            try { await Task.Delay(800); } catch { /* ignore */ }
         }
     }
 
@@ -231,12 +396,18 @@ public partial class MainWindow : Window
         }
     }
 
+    // (metrics snapshot is written after Optimize and from About — not every poll)
+
     async Task RefreshInfoAsync()
     {
         if (_hw is null) return;
         var snap = await Task.Run(() => _hw.Info());
         _last = snap;
-        TxtSubtitle.Text = $"{snap.GpuName}  ·  {snap.VramMb} MB  ·  Ryzen 7 9800X3D";
+        TxtSubtitle.Text = $"{snap.GpuName}  ·  {snap.VramMb} MB";
+        var support = PlatformSupport.FromNames(snap.GpuName, cpuName: null);
+        TxtPlatformHint.Text = support.HasUnsupportedHint ? support.Message : "";
+        if (support.HasUnsupportedHint)
+            Log(support.Message);
         TxtFactory.Text = snap.AtFactory ? "FACTORY" : "TUNED";
         PillFactory.Background = brush(snap.AtFactory ? "#1A2330" : "#3A2410");
         TxtFactory.Foreground = snap.AtFactory ? (Brush)FindResource("Cyan") : (Brush)FindResource("Accent");
@@ -425,6 +596,32 @@ public partial class MainWindow : Window
         SldTrfc.Value = p.Trfc;
         ChkExpo.IsChecked = p.Expo;
         OnRamSlider(this, new RoutedPropertyChangedEventArgs<double>(0, 0));
+        if (TxtRamPrimaries is not null)
+            TxtRamPrimaries.Text = RamTimingGuidance.FormatPrimaryLine(p);
+    }
+
+    async void OnCurveShaperApply(object sender, RoutedEventArgs e)
+    {
+        if (_caps is null || !_caps.CurveShaper)
+        {
+            MessageBox.Show(this, CurveShaperSupport.UnavailableReason, "Curve Shaper",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!EnsureEulaAccepted()) return;
+        if (_smu is null) return;
+        if (!ConfirmDangerousWrite(BiosWriteGuard.SessionWarning, "Apply Curve Shaper", requireAdmin: true))
+            return;
+        await RunExclusive("Applying Curve Shaper…", async ct =>
+        {
+            var surface = _smu.ControlSurface();
+            var profile = new CurveShaperProfile { Enabled = true };
+            var caps = _caps;
+            var r = await Task.Run(() => surface.ApplyCurveShaper(profile, caps), ct);
+            Log($"Curve Shaper apply session={r.SessionApplied} {(r.Error ?? "ok")}");
+            if (!string.IsNullOrEmpty(r.Error))
+                throw new HwException(r.Error);
+        });
     }
 
     async void OnRamRead(object sender, RoutedEventArgs e)
@@ -438,29 +635,42 @@ public partial class MainWindow : Window
                 Log("RAM read failed. Run as Administrator so CDefaultBIOS can bind.");
                 return;
             }
-            await Dispatcher.InvokeAsync(() => LoadRamToUi(p));
-            Log($"RAM {p.DataRateMts} MT/s  tCL {p.Tcl}-{p.Trcd}-{p.Trp}-{p.Tras}  tRFC {p.Trfc}  VDDIO {p.VddioMv} mV");
+            await Dispatcher.InvokeAsync(() =>
+            {
+                LoadRamToUi(p);
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance(p);
+            });
+            Log(RamTimingGuidance.FormatPrimaryLine(p));
+            foreach (var w in RamTimingGuidance.SoftWarnings(p))
+                Log("RAM note: " + w);
         });
     }
 
     async void OnRamWrite(object sender, RoutedEventArgs e)
     {
         if (_smu is null) return;
+        if (!EnsureEulaAccepted()) return;
         if (!ConfirmDangerousWrite(BiosWriteGuard.RamBiosWarning, "Write RAM BIOS", requireAdmin: true))
             return;
         var profile = UiRamProfile();
+        foreach (var w in RamTimingGuidance.SoftWarnings(profile))
+            Log("RAM note: " + w);
         if (MessageBox.Show(this,
-                $"Confirm RAM values:\nDDR5-{profile.DataRateMts}  {profile.Tcl}-{profile.Trcd}-{profile.Trp}-{profile.Tras}  tRFC {profile.Trfc}\nVDDIO {profile.VddioMv} mV  EXPO={(profile.Expo ? "on" : "off")}",
+                $"Confirm RAM values:\n{RamTimingGuidance.FormatPrimaryLine(profile)}\n\nReboot required after a successful BIOS write.",
                 "Write RAM BIOS",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
         await RunExclusive("Writing RAM timings to BIOS…", async ct =>
         {
-            var r = await Task.Run(() => _smu.ApplyRam(profile), ct);
+            var surface = _control ?? _smu.ControlSurface();
+            var r = await Task.Run(() => surface.ApplyRam(profile), ct);
             _tune?.SaveRamProfile(profile);
-            Log($"RAM BIOS persist={r.BiosPersisted} {(r.Error ?? "ok")}");
+            await Dispatcher.InvokeAsync(() => TxtRamGuidance.Text = RamTimingGuidance.Guidance(profile));
+            Log($"RAM BIOS persist={r.BiosPersisted} reboot={r.RequiresReboot} {(r.Error ?? "ok")}");
             if (!r.BiosPersisted)
                 throw new HwException(r.Error ?? "RAM BIOS apply failed");
+            if (r.RequiresReboot)
+                Log("Reboot required for RAM BIOS timings.");
         });
     }
 
@@ -520,6 +730,7 @@ public partial class MainWindow : Window
 
     bool ConfirmDangerousWrite(string warning, string title, bool requireAdmin)
     {
+        if (!EnsureEulaAccepted()) return false;
         if (requireAdmin && !WindowsElevation.IsAdministrator())
         {
             var again = MessageBox.Show(this,
@@ -533,24 +744,254 @@ public partial class MainWindow : Window
             == MessageBoxResult.OK;
     }
 
+    bool EnsureEulaAccepted(bool forcePrompt = false)
+    {
+        if (_tune is null) return _settings.HasAcceptedCurrentEula;
+        if (!forcePrompt && _settings.HasAcceptedCurrentEula)
+            return true;
+
+        var body =
+            $"{ProductIdentity.Name} {ProductIdentity.Version}\n\n" +
+            ProductIdentity.EulaSummary + "\n\n" +
+            ProductIdentity.ShortDisclaimer + "\n\n" +
+            "Full text ships as EULA.txt and DISCLAIMER.txt next to ZenLoop.exe.\n\n" +
+            "Do you accept and continue?";
+
+        var result = MessageBox.Show(this, body, "ZenLoop — first-run safety",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes)
+            return false;
+
+        _settings.AcceptedEulaVersion = ProductIdentity.EulaVersion;
+        _tune.SaveSettings(_settings);
+        Log($"Accepted EULA v{ProductIdentity.EulaVersion}");
+        return true;
+    }
+
+    async void OnAbout(object sender, RoutedEventArgs e)
+    {
+        var extra = _settings.HasAcceptedCurrentEula
+            ? $"\n\nEULA v{ProductIdentity.EulaVersion}: accepted."
+            : $"\n\nEULA v{ProductIdentity.EulaVersion}: not accepted yet.";
+        WriteMetricsSnapshot("telemetry");
+
+        var updateLine = "\n\nUpdate check: (checking…)";
+        try
+        {
+            var check = await UpdateChecker.CheckAsync(
+                ProductIdentity.Version,
+                _settings.UpdateManifestUrl);
+            updateLine = "\n\n" + check.Message;
+            if (check.UpdateAvailable)
+                Log(check.Message);
+        }
+        catch (Exception ex)
+        {
+            updateLine = "\n\nUpdate check skipped: " + ex.Message;
+        }
+
+        var recoveryPath = FindShippedRecoveryDoc();
+        var recoveryHint = recoveryPath is null
+            ? "\n\nRecovery guide not found next to the exe (expected RECOVERY.md)."
+            : "\n\nFull recovery guide: " + recoveryPath;
+
+        var choice = MessageBox.Show(this,
+            ProductIdentity.AboutText() + extra + updateLine + recoveryHint +
+            "\n\n" + MetricsSnapshotExport.PathHelp +
+            "\n\nYes = re-open EULA accept  ·  No = open recovery guide  ·  Cancel = close",
+            "About ZenLoop",
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
+        if (choice == MessageBoxResult.Yes)
+            EnsureEulaAccepted(forcePrompt: true);
+        else if (choice == MessageBoxResult.No)
+            TryOpenRecoveryDoc(recoveryPath);
+    }
+
+    static string? FindShippedRecoveryDoc()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        foreach (var rel in new[] { "RECOVERY.md", System.IO.Path.Combine("docs", "RECOVERY.md") })
+        {
+            var path = System.IO.Path.Combine(baseDir, rel);
+            if (File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    void TryOpenRecoveryDoc(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            MessageBox.Show(this,
+                ProductIdentity.RecoverySummary + "\n\nRECOVERY.md was not found beside ZenLoop.exe. " +
+                "See docs/RECOVERY.md in the source tree.",
+                "Recovery", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Could not open recovery guide:\n" + ex.Message + "\n\n" + path,
+                "Recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    void OnExportPack(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString();
+        var pack = _tune.BuildProfilePack(goal, notes: "Exported from ZenLoop UI");
+        if (pack.Gpu is null && pack.Cpu is null && pack.Ram is null)
+        {
+            MessageBox.Show(this, "Nothing to export yet. Run Optimize or save GPU/CPU/RAM profiles first.",
+                "Export tune pack", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Export ZenLoop tune pack",
+            Filter = "ZenLoop profile pack (*.zenloop.json)|*.zenloop.json|JSON (*.json)|*.json",
+            FileName = $"zenloop-tune-{DateTime.Now:yyyyMMdd-HHmm}.zenloop.json",
+            InitialDirectory = Directory.Exists(_tune.ProfilePackExportDir)
+                ? _tune.ProfilePackExportDir
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            pack.SaveFile(dlg.FileName);
+            Log("Exported pack: " + pack.Summary() + " → " + dlg.FileName);
+            MessageBox.Show(this, "Saved:\n" + dlg.FileName + "\n\n" + pack.Summary(),
+                "Export tune pack", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    void OnImportPack(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        if (!EnsureEulaAccepted()) return;
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import ZenLoop tune pack",
+            Filter = "ZenLoop profile pack (*.zenloop.json)|*.zenloop.json|JSON (*.json)|*.json|All files|*.*",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            var pack = ProfilePack.Parse(File.ReadAllText(dlg.FileName));
+            if (MessageBox.Show(this,
+                    "Import and overwrite saved profiles?\n\n" + pack.Summary() +
+                    "\n\nThis does not apply live settings until you click Restore last tune / Apply / Write BIOS.",
+                    "Import tune pack",
+                    MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+                return;
+
+            _tune.ApplyProfilePackFiles(pack);
+            if (pack.Cpu is not null) LoadProfileToUi(pack.Cpu);
+            if (pack.Ram is not null)
+            {
+                LoadRamToUi(pack.Ram);
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance(pack.Ram);
+            }
+            Log("Imported pack: " + pack.Summary() + " ← " + dlg.FileName);
+            MessageBox.Show(this, "Profiles saved. Use Restore last tune to apply GPU+CPU session settings.",
+                "Import tune pack", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Import failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     async Task ApplyPboAsync(PersistMode persist)
     {
         if (_smu is null) return;
+        if (persist == PersistMode.Bios && _caps is { BiosPbo: false, BiosCo: false })
+        {
+            MessageBox.Show(this,
+                "BIOS persist is not available on this PC (CDefaultBIOS not bound). Session apply still works until reboot.",
+                "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var profile = UiProfile();
         await RunExclusive(persist == PersistMode.Bios ? "BIOS persist PBO + Curve Optimizer…" : "Applying PBO session via SMU…",
             async ct =>
             {
-                var result = await Task.Run(() => _smu.Apply(profile, persist), ct);
-                Log($"PBO apply backend={result.Backend} session={result.SessionApplied} bios={result.BiosPersisted} co={result.CoWritten}");
+                var surface = _control ?? _smu.ControlSurface();
+                var result = await Task.Run(() => surface.Apply(profile, persist), ct);
+                Log($"PBO apply backend={result.Backend} session={result.SessionApplied} bios={result.BiosPersisted} co={result.CoWritten} reboot={result.RequiresReboot} boost_applied={result.BoostOverrideApplied}");
                 if (result.Error is string err)
                     Log("PBO: " + err);
+                if (result.Note is string note)
+                    Log("PBO note: " + note);
                 TxtPboBackend.Text = $"SMU: {result.Backend}  session={(result.SessionApplied ? "applied" : "no")}  BIOS={(result.BiosPersisted ? "persisted" : "not persisted")}  CO={(result.CoWritten ? "written" : "not written")}";
                 if (!result.SessionApplied || (profile.Cores.Count > 0 && !result.CoWritten))
                     throw new HwException(result.Error ?? "PBO apply failed (per-core Curve Optimizer not written)");
                 if (persist == PersistMode.Bios && !result.BiosPersisted)
                     throw new HwException(result.Error ?? "BIOS persist failed");
+                if (result.RequiresReboot)
+                    Log("Reboot required for BIOS values to take effect in firmware.");
+                if (!result.BoostOverrideApplied && profile.BoostOverrideMhz != 0)
+                    Log(BiosWriteGuard.BoostUnavailableNote);
                 _tune?.SaveCpuPboProfile(profile);
             });
+    }
+
+    async void OnPboClearSession(object sender, RoutedEventArgs e)
+    {
+        if (_smu is null) return;
+        if (!ConfirmDangerousWrite(
+                "Clear Curve Optimizer offsets to 0 for this Windows session only.\n\nDoes not undo BIOS. Values reset on reboot unless you Write stock BIOS.",
+                "Clear session CO", requireAdmin: true))
+            return;
+        await RunExclusive("Clearing session Curve Optimizer…", async ct =>
+        {
+            var surface = _control ?? _smu.ControlSurface();
+            var r = await Task.Run(() => surface.RestoreSessionStock(UiProfile()), ct);
+            Log($"Session stock CO clear session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+            if (!r.SessionApplied)
+                throw new HwException(r.Error ?? "Session CO clear failed");
+            await Dispatcher.InvokeAsync(() =>
+            {
+                foreach (var s in _coSliders) s.Value = 0;
+                OnPboSlider(this, new RoutedPropertyChangedEventArgs<double>(0, 0));
+            });
+        });
+    }
+
+    async void OnPboStockBios(object sender, RoutedEventArgs e)
+    {
+        if (_smu is null) return;
+        if (_caps is { BiosStockWrite: false })
+        {
+            MessageBox.Show(this,
+                "Stock BIOS write is not available (CDefaultBIOS not bound). Use Clear session CO for this boot, or CLR_CMOS for a full motherboard reset.",
+                "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!ConfirmDangerousWrite(BiosWriteGuard.StockBiosWarning, "Write stock BIOS", requireAdmin: true))
+            return;
+        await RunExclusive("Writing stock-like PBO + CO=0 to BIOS…", async ct =>
+        {
+            var surface = _control ?? _smu.ControlSurface();
+            var r = await Task.Run(() => surface.WriteStockToBios(UiProfile()), ct);
+            Log($"Stock BIOS persist={r.BiosPersisted} reboot={r.RequiresReboot} {(r.Error ?? "ok")}");
+            if (!r.BiosPersisted)
+                throw new HwException(r.Error ?? "Stock BIOS write failed");
+            Log("Reboot required. This is not a full UEFI Optimized Defaults — use CLR_CMOS if POST fails.");
+        });
     }
 
     async void OnPboRead(object sender, RoutedEventArgs e)
@@ -621,12 +1062,29 @@ public partial class MainWindow : Window
     async void OnReset(object sender, RoutedEventArgs e)
     {
         if (_hw is null) return;
-        if (MessageBox.Show(this, "Restore AMD factory GPU tuning (Adrenalin Default)?", "ZenLoop",
+        var alsoCpu = _smu is { IsAvailable: true };
+        var msg = alsoCpu
+            ? "Restore AMD factory GPU tuning (Adrenalin Default) and clear session Curve Optimizer to 0?"
+            : "Restore AMD factory GPU tuning (Adrenalin Default)?";
+        if (MessageBox.Show(this, msg, "ZenLoop",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
         await RunExclusive("Resetting to factory…", async ct =>
         {
             await Task.Run(() => _hw.Reset(), ct);
+            _tune?.ClearAutotuneProgress();
+            if (alsoCpu && _smu is not null && _tune is not null)
+            {
+                try
+                {
+                    _tune.RestoreSessionCpuStock(_smu, UiProfile());
+                    Log("Session Curve Optimizer cleared to 0.");
+                }
+                catch (Exception ex)
+                {
+                    Log("CPU stock session clear skipped: " + ex.Message);
+                }
+            }
             Log("Factory GPU tuning restored.");
         });
         await RefreshInfoAsync();
@@ -635,46 +1093,121 @@ public partial class MainWindow : Window
     async void OnOptimize(object sender, RoutedEventArgs e)
     {
         if (_tune is null) return;
+        if (!EnsureEulaAccepted()) return;
+        if (_last is not null)
+        {
+            var support = PlatformSupport.FromNames(_last.GpuName);
+            if (!support.AmdGpuLikely)
+            {
+                MessageBox.Show(this, support.Message, "Unsupported GPU", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+        }
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = (int)SldSeconds.Value;
-        if (MessageBox.Show(this,
+
+        bool resume = false;
+        var incomplete = _tune.LoadIncompleteOptimize(goal);
+        if (incomplete is not null)
+        {
+            var choice = MessageBox.Show(this,
+                incomplete.DescribeResume() + "\n\nYes = continue after reboot/crash\nNo = start fresh\nCancel = abort",
+                "Resume Optimize?",
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (choice == MessageBoxResult.Cancel) return;
+            if (choice == MessageBoxResult.Yes)
+                resume = true;
+            else
+                _tune.ClearOptimizeCheckpoint();
+        }
+
+        if (!resume && MessageBox.Show(this,
                 "ZenLoop will:\n"
                 + "1. Restore stock GPU (and session Curve Optimizer = 0 if SMU is live)\n"
                 + "2. Benchmark stock (CPU + RAM + GPU)\n"
                 + "3. Auto undervolt/overclock the GPU\n"
-                + "4. Auto-tune per-core Curve Optimizer\n"
+                + "4. Auto-tune per-core Curve Optimizer (with all-core confirm)\n"
                 + "5. Benchmark again and show faster / cooler / less power\n\n"
-                + $"Goal: {goal}  ·  {secs}s per step\nClose games first. This takes several minutes.",
+                + $"{ZenLoop.Core.ClockSearch.DescribeGoal(goal)}\n"
+                + $"{secs}s per step\nClose games first. This takes several minutes.\n\n"
+                + ProductIdentity.ShortDisclaimer,
                 "Optimize this PC",
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+
+        if (resume && MessageBox.Show(this,
+                "Continue Optimize from the last finished phase?\n"
+                + $"{incomplete!.DescribeResume()}\n\n"
+                + ProductIdentity.ShortDisclaimer,
+                "Continue Optimize",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
 
         var limits = new Limits { MinVoltageMv = 1025, MaxClockMhz = 3000 };
         var seed = UiProfile();
-        await RunExclusive("Optimizing this PC…", async ct =>
+        string? optimizeBanner = null;
+        await RunExclusive(resume ? "Resuming Optimize…" : "Optimizing this PC…", async ct =>
         {
             var progress = new Progress<TuneProgress>(p =>
             {
-                Bar.Value = p.Fraction;
-                TxtStep.Text = p.StepName ?? p.Message;
+                Bar.Value = Math.Max(Bar.Value, p.Fraction);
+                var first = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
+                TxtStep.Text = first.Length > 120 ? first[..120] : first;
                 Log(p.Message);
+                if (p.StepName == "done" && !string.IsNullOrWhiteSpace(p.Message))
+                    optimizeBanner = p.Message;
                 if (p.Metrics is not null && _last is not null)
                     ApplyMetrics(_last with { Metrics = p.Metrics });
             });
-            var delta = await _tune.RunAutonomousAsync(
-                goal, secs, limits, ChkSkipVram.IsChecked == true, _smu, seed, progress, ct);
-            RefreshBenchText();
-            if (delta is not null)
+            try
             {
-                Log(delta.Summary);
-                Log(delta.Report(_tune.LoadBenchBaseline(), _tune.LoadBenchCurrent()));
-                TxtStep.Text = delta.Summary;
+                var delta = await _tune.RunAutonomousAsync(
+                    goal, secs, limits, ChkSkipVram.IsChecked == true, _smu, seed, progress, ct, resume);
+                RefreshBenchText();
+                RefreshHistoryText();
+                if (!string.IsNullOrWhiteSpace(optimizeBanner))
+                {
+                    foreach (var line in optimizeBanner.Split('\n'))
+                        Log(line);
+                    TxtStep.Text = optimizeBanner.Split('\n')[0];
+                    if (TxtBench is not null)
+                        TxtBench.Text = optimizeBanner + (delta is null ? "" : "\n\n" + delta.Report(_tune.LoadBenchBaseline(), _tune.LoadBenchCurrent()));
+                }
+                else if (delta is not null)
+                {
+                    Log(delta.Summary);
+                    Log(delta.Report(_tune.LoadBenchBaseline(), _tune.LoadBenchCurrent()));
+                    TxtStep.Text = delta.Summary;
+                }
+                else
+                    Log("Optimize finished but a baseline or current bench is missing.");
+                WriteMetricsSnapshot("optimize", goal, delta?.Summary, pass: delta is not null);
             }
-            else
-                Log("Optimize finished but a baseline or current bench is missing.");
-        }, restoreOnCancel: true);
+            catch (OperationCanceledException)
+            {
+                var abort = OptimizeSummary.FormatAbort("stopped by user (Stop / cancel)");
+                Log(abort);
+                TxtStep.Text = "=== Optimize ABORT ===";
+                throw;
+            }
+        }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
         TryLoadCpuProfileIntoUi();
+    }
+
+    void WriteMetricsSnapshot(string source, string? goal = null, string? summary = null, bool? pass = null)
+    {
+        try
+        {
+            var metrics = _last?.Metrics ?? new Dictionary<string, double?>();
+            var snap = MetricsSnapshotExport.FromMetrics(metrics, source, goal, summary, pass);
+            var path = MetricsSnapshotExport.Write(snap);
+            Log($"Metrics snapshot → {path}");
+        }
+        catch (Exception ex)
+        {
+            Log("Metrics export skipped: " + ex.Message);
+        }
     }
 
     async void OnAutoGpu(object sender, RoutedEventArgs e)
@@ -682,9 +1215,25 @@ public partial class MainWindow : Window
         if (_tune is null) return;
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = (int)SldSeconds.Value;
+
+        bool resume = true;
+        if (_tune.HasProgress(goal))
+        {
+            var choice = MessageBox.Show(this,
+                "An incomplete GPU auto-tune was found.\n\nYes = resume where it left off\nNo = start fresh\nCancel = abort",
+                "Resume GPU tune?",
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (choice == MessageBoxResult.Cancel) return;
+            if (choice == MessageBoxResult.No)
+            {
+                _tune.ClearAutotuneProgress();
+                resume = false;
+            }
+        }
+
         if (MessageBox.Show(this,
                 "This changes live GPU clocks and voltage.\nClose games first.\n\n"
-                + $"Goal: {goal}\n{secs}s per step.\n\nContinue?",
+                + $"{ZenLoop.Core.ClockSearch.DescribeGoal(goal)}\n{secs}s per step.\n\nContinue?",
                 "Auto GPU undervolt + overclock",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
@@ -694,16 +1243,17 @@ public partial class MainWindow : Window
         {
             var progress = new Progress<TuneProgress>(p =>
             {
-                Bar.Value = p.Fraction;
-                TxtStep.Text = p.StepName ?? p.Message;
+                Bar.Value = Math.Max(Bar.Value, p.Fraction);
+                TxtStep.Text = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
                 Log(p.Message);
                 if (p.Metrics is not null && _last is not null)
                     ApplyMetrics(_last with { Metrics = p.Metrics });
             });
-            var result = await _tune.GpuAutotuneAsync(goal, secs, limits, ChkSkipVram.IsChecked == true, progress, ct);
+            var result = await _tune.GpuAutotuneAsync(goal, secs, limits, ChkSkipVram.IsChecked == true, progress, ct, resume);
             var ok = result.TryGetValue("ok", out var o) && o is true;
             Log(ok ? "Auto-tune finished. Profile saved." : "Auto-tune stopped: " + result.GetValueOrDefault("reason"));
-        }, restoreOnCancel: true);
+            TxtStep.Text = ok ? "GPU tune saved" : "GPU tune stopped";
+        }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
     }
 
@@ -754,7 +1304,7 @@ public partial class MainWindow : Window
         var cpu = _tune.LoadCpuPboProfile();
         if (gpu is null && cpu is null)
         {
-            MessageBox.Show(this, "No saved profiles yet. Run Auto GPU UV + OC and/or apply CPU PBO first.", "ZenLoop",
+            MessageBox.Show(this, "No saved profiles yet. Run Optimize or Auto GPU UV + OC first.", "ZenLoop",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -773,22 +1323,121 @@ public partial class MainWindow : Window
         }
     }
 
-    async Task TryApplyStartupProfileAsync()
+    async Task HotApplyTickAsync()
     {
-        if (_tune is null) return;
-        var p = _tune.LoadStartupProfile();
-        if (p is null) return;
-        Log($"Applying saved GPU profile on start ({p.VoltageMv} mV @ {p.MaxMhz} MHz)…");
+        if (_tune is null || _hotApplyRunning || !_settings.HasAcceptedCurrentEula)
+            return;
+        var store = _tune.LoadAppProfiles();
+        var auto = _settings.AppProfileAutoApply || store.AutoApply;
+        if (!store.Enabled && !auto)
+        {
+            RefreshAppProfilesTextQuiet();
+            return;
+        }
+
+        _hotApplyRunning = true;
         try
         {
-            await Task.Run(() => _tune.ApplyProfile(p));
-            Log("Startup profile applied.");
-            await RefreshInfoAsync();
+            var identity = await Task.Run(ForegroundProcess.TryGetIdentity);
+            var (decision, matched) = _hotApply.Tick(
+                store, auto, _busy, identity, DateTime.UtcNow,
+                packExists: p => File.Exists(_tune.ResolveAppPackPath(p)));
+
+            if (matched is not null && decision is AppProfileApplyDecision.Apply
+                or AppProfileApplyDecision.SkipDebounce
+                or AppProfileApplyDecision.SkipAlreadyApplied)
+            {
+                if (TxtAppProfiles is not null)
+                    TxtAppProfiles.Text = store.StatusLine()
+                        + $" Foreground: {matched.DisplayName ?? matched.Match} ({AppProfileHotApply.Describe(decision)}).";
+            }
+            else
+                RefreshAppProfilesTextQuiet();
+
+            if (decision != AppProfileApplyDecision.Apply || matched is null)
+                return;
+
+            var packPath = _tune.ResolveAppPackPath(matched.PackPath);
+            var pack = ProfilePack.TryLoadFile(packPath);
+            if (pack is null)
+            {
+                Log($"Hot-apply skipped: cannot load pack {packPath}");
+                return;
+            }
+
+            Log($"Hot-apply: {matched.DisplayName ?? matched.Match} → {pack.Summary()}");
+            if (await ApplyPackLiveAsync(pack, exclusive: true))
+                _hotApply.MarkApplied(matched.PackPath);
+            RefreshAppProfilesText();
         }
         catch (Exception ex)
         {
-            Log("Startup profile apply failed: " + ex.Message);
+            Log("Hot-apply: " + ex.Message);
         }
+        finally
+        {
+            _hotApplyRunning = false;
+        }
+    }
+
+    void RefreshAppProfilesTextQuiet()
+    {
+        if (_tune is null || TxtAppProfiles is null) return;
+        var store = _tune.LoadAppProfiles();
+        var text = store.StatusLine();
+        var identity = ForegroundProcess.TryGetIdentity();
+        var active = AppProfileMatcher.MatchForeground(store, identity)
+                     ?? AppProfileMatcher.FindActive(store);
+        if (active is not null)
+            text += $" Active match: {active.DisplayName ?? active.Match}.";
+        TxtAppProfiles.Text = text;
+    }
+
+    async Task<bool> ApplyPackLiveAsync(ProfilePack pack, bool exclusive)
+    {
+        if (_tune is null) return false;
+        if (exclusive && _busy) return false;
+        _tune.ApplyProfilePackFiles(pack);
+        if (pack.Cpu is not null)
+            LoadProfileToUi(pack.Cpu);
+        if (pack.Ram is not null)
+        {
+            LoadRamToUi(pack.Ram);
+            TxtRamGuidance.Text = RamTimingGuidance.Guidance(pack.Ram);
+        }
+
+        async Task Work(CancellationToken ct)
+        {
+            if (pack.Gpu is not null)
+            {
+                await Task.Run(() => _tune.ApplyProfile(pack.Gpu), ct);
+                Log($"Hot GPU apply {pack.Gpu.VoltageMv} mV @ {pack.Gpu.MaxMhz} MHz");
+            }
+            if (pack.Cpu is not null && _smu is not null)
+            {
+                var r = await Task.Run(() => _smu.Apply(pack.Cpu, PersistMode.Session), ct);
+                Log($"Hot CPU apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+                if (!r.SessionApplied && r.Error is string err)
+                    throw new HwException(err);
+            }
+        }
+
+        if (exclusive)
+        {
+            if (_busy) return false;
+            bool ok = false;
+            await RunExclusive("Hot-applying per-app pack…", async ct =>
+            {
+                await Work(ct);
+                ok = true;
+            });
+            await RefreshInfoAsync();
+            return ok;
+        }
+
+        await Work(CancellationToken.None);
+        await RefreshInfoAsync();
+        return true;
     }
 
     async Task ApplyProfileAsync(ZenLoop.Core.GpuProfile p)
@@ -887,11 +1536,80 @@ public partial class MainWindow : Window
             TxtBench.Text = $"Current saved {b.Utc:u}. Run Bench baseline at stock to compare.";
     }
 
+    void RefreshHistoryText()
+    {
+        if (_tune is null || TxtHistory is null) return;
+        TxtHistory.Text = _tune.LoadOptimizeHistory().FormatRecent(5);
+    }
+
+    void RefreshAppProfilesText() => RefreshAppProfilesTextQuiet();
+
+    void MaybeOfferOptimizeResume()
+    {
+        if (_tune is null) return;
+        var ck = _tune.LoadIncompleteOptimize();
+        if (ck is null) return;
+        Log(ck.DescribeResume());
+        TxtFooter.Text = "Incomplete Optimize found — click Optimize this PC to continue or start fresh.";
+    }
+
+    void OnBindAppProfile(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        if (!EnsureEulaAccepted()) return;
+        var pack = _tune.BuildProfilePack(
+            ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString(),
+            notes: "Per-app bind");
+        if (pack.Gpu is null && pack.Cpu is null && pack.Ram is null)
+        {
+            MessageBox.Show(this, "Nothing to bind yet. Run Optimize or save GPU/CPU/RAM profiles first.",
+                "Bind pack to app", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose game/app executable to bind",
+            Filter = "Executable (*.exe)|*.exe|All files|*.*",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            var match = System.IO.Path.GetFileName(dlg.FileName);
+            var packsDir = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(_tune.AppProfilesPath) ?? "",
+                "app-packs");
+            Directory.CreateDirectory(packsDir);
+            var packPath = System.IO.Path.Combine(packsDir, System.IO.Path.GetFileNameWithoutExtension(match) + ".zenloop.json");
+            pack.SaveFile(packPath);
+
+            var store = _tune.LoadAppProfiles();
+            store.Enabled = true;
+            store.AutoApply = _settings.AppProfileAutoApply;
+            store.Upsert(match, packPath, displayName: System.IO.Path.GetFileNameWithoutExtension(match));
+            _tune.SaveAppProfiles(store);
+            RefreshAppProfilesText();
+            Log($"Bound pack to '{match}' → {packPath}");
+            var tip = _settings.AppProfileAutoApply
+                ? "Auto-apply is on: when that exe is focused, ZenLoop will apply this pack (2.5s debounce; skipped during Optimize)."
+                : "Enable “Auto-apply per-app pack when matched exe is focused” to hot-apply while gaming.";
+            MessageBox.Show(this,
+                $"Bound '{match}' to:\n{packPath}\n\n{tip}",
+                "Per-app profile", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Bind failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     void OnStop(object sender, RoutedEventArgs e) => _cts?.Cancel();
 
     void OnClearLog(object sender, RoutedEventArgs e) => TxtLog.Clear();
 
-    async Task RunExclusive(string status, Func<CancellationToken, Task> work, bool restoreOnCancel = false)
+    async Task RunExclusive(string status, Func<CancellationToken, Task> work, bool restoreOnCancel = false, bool preserveStepOnSuccess = false)
     {
         if (_busy) return;
         _busy = true;
@@ -901,31 +1619,62 @@ public partial class MainWindow : Window
         TxtFooter.Text = status;
         TxtStep.Text = status;
         Log(status);
+        string? successStep = null;
         try
         {
             await work(_cts.Token);
+            if (preserveStepOnSuccess)
+                successStep = TxtStep.Text;
         }
         catch (OperationCanceledException)
         {
             Log("Stopped.");
-            if (restoreOnCancel && _hw is not null)
+            if (restoreOnCancel)
             {
-                try { await Task.Run(() => _hw.Reset()); Log("Factory restored after stop."); }
-                catch (Exception ex) { Log("Reset after stop failed: " + ex.Message); }
+                try
+                {
+                    if (_hw is not null)
+                    {
+                        await Task.Run(() => _hw.Reset());
+                        Log("Factory GPU restored after stop.");
+                    }
+                    _tune?.ClearAutotuneProgress();
+                    if (_smu is { IsAvailable: true } && _tune is not null)
+                    {
+                        _tune.RestoreSessionCpuStock(_smu, UiProfile());
+                        Log("Session Curve Optimizer cleared to 0 after stop.");
+                    }
+                }
+                catch (Exception ex) { Log("Restore after stop failed: " + ex.Message); }
             }
+            successStep = "stopped";
         }
         catch (Exception ex)
         {
             Log("ERROR " + ex.Message);
             MessageBox.Show(this, ex.Message, "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Error);
+            successStep = "error";
         }
         finally
         {
             _busy = false;
             _cts.Dispose();
             _cts = null;
-            Bar.Value = 0;
-            TxtStep.Text = "idle";
+            if (successStep is not null && preserveStepOnSuccess && successStep is not "stopped" and not "error")
+            {
+                Bar.Value = 1;
+                TxtStep.Text = successStep;
+            }
+            else if (successStep is "stopped" or "error")
+            {
+                Bar.Value = 0;
+                TxtStep.Text = successStep;
+            }
+            else
+            {
+                Bar.Value = 0;
+                TxtStep.Text = "idle";
+            }
             SetBusyUi(false);
             SetStatus("LIVE", true);
         }
@@ -948,6 +1697,11 @@ public partial class MainWindow : Window
         {
             BtnBenchBase.IsEnabled = !busy;
             BtnBenchNow.IsEnabled = !busy;
+        }
+        if (BtnExportPack is not null)
+        {
+            BtnExportPack.IsEnabled = !busy;
+            BtnImportPack.IsEnabled = !busy;
         }
         if (BtnPboApply is not null)
         {

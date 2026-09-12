@@ -616,10 +616,66 @@ static void EmitCores(Json& j, const std::vector<short>& co) {
     j.endArr();
 }
 
+static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, bool drvOk, bool supported,
+                             HMODULE platform, HMODULE device) {
+    bool curveShaper = false;
+    std::string csFound;
+    static const char* kCsNames[] = {
+        "GetCurveShaper", "SetCurveShaper",
+        "GetCurveShaperParameters", "SetCurveShaperParameters",
+        "EnableCurveShaper", "DisableCurveShaper",
+        "GetCSParameters", "SetCSParameters",
+        "GetCurveShaperStatus", "SetCurveShaperStatus",
+        "GetCurveShaperBands", "SetCurveShaperBands",
+        nullptr
+    };
+    for (int i = 0; kCsNames[i]; i++) {
+        if ((platform && GetProcAddress(platform, kCsNames[i])) ||
+            (device && GetProcAddress(device, kCsNames[i]))) {
+            curveShaper = true;
+            csFound = kCsNames[i];
+            break;
+        }
+    }
+
+    j.key("capabilities");
+    Json c;
+    c.beginObj();
+    c.boolean("session_pbo", rmOk && drvOk);
+    c.boolean("session_co", coBound);
+    c.boolean("bios_pbo", biosBound);
+    c.boolean("bios_co", biosBound);
+    c.boolean("bios_ram", biosBound);
+    c.boolean("curve_shaper", curveShaper);
+    c.boolean("boost_override", false);
+    c.boolean("manual_all_core_oc", false);
+    c.boolean("gpu_bios_persist", false);
+    c.boolean("bios_stock_write", biosBound);
+    c.boolean("bios_restore_full_uefi", false);
+    c.boolean("requires_reboot_after_bios", true);
+    c.boolean("supported_processor", supported);
+    if (curveShaper) {
+        c.str("curve_shaper_note",
+              std::string("Curve Shaper C export found: ") + csFound);
+    } else {
+        c.str("curve_shaper_note",
+              "no Platform.dll/Device.dll Curve Shaper C export (Ryzen Master GUI-only on Ryzen 9000; ZenLoop will not invent bands)");
+    }
+    c.str("boost_override_note",
+          "no Platform.dll C export for PBO boost override (GetCurrentFMaxCPU is read-only)");
+    c.str("manual_all_core_oc_note",
+          "SetOverclockFreqAllCores is loaded but not exposed (manual all-core lock != PBO boost)");
+    c.str("bios_restore_note",
+          "Write stock PBO/CO=0 via CDefaultBIOS when bound; full UEFI undo needs CLR_CMOS");
+    c.endObj();
+    j.os << c.str();
+    j.first = false;
+}
+
 int main(int argc, char** argv) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], "--out") == 0) gOut = argv[i + 1];
-    if (argc < 2) Fail("usage: zenloop-cpu info|read|apply ...");
+    if (argc < 2) Fail("usage: zenloop-cpu info|read|caps|apply|ram-read|ram-apply|telemetry ...");
     std::string cmd = argv[1];
 
     std::string drv;
@@ -674,11 +730,11 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (cmd == "info" || cmd == "read") {
+    if (cmd == "info" || cmd == "read" || cmd == "caps") {
         bool rmOk = (rmRc == 0) && !BufferEmpty(rm);
         Json j;
         j.beginObj();
-        j.boolean("ok", rmOk);
+        j.boolean("ok", cmd == "caps" ? (drvOk || rmOk || devs.cpu || devs.bios) : rmOk);
         j.str("backend", "amd-ryzen-master");
         j.str("driver", drv);
         j.boolean("driver_running", drvOk);
@@ -691,17 +747,20 @@ int main(int argc, char** argv) {
         j.str("bios_rtti", devs.biosName);
         j.boolean("co_bind", devs.cpu != nullptr);
         j.boolean("bios_bind", devs.bios != nullptr);
-        if (rmOk) {
+        EmitCapabilities(j, rmOk, devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0,
+                         api.platform, api.device);
+        if (cmd != "caps" && rmOk) {
             j.boolean("pbo_enabled", true);
             j.numi("ppt_watts", parsed.ppt);
             j.numi("tdc_amps", parsed.tdc);
             j.numi("edc_amps", parsed.edc);
             j.numi("boost_override_mhz", 0);
+            j.boolean("boost_override_applied", false);
             j.numi("fmax_mhz", fmax);
             j.numi("scalar", 1);
             j.numi("logical_cores", ncores);
             EmitCores(j, co);
-        } else {
+        } else if (cmd != "caps") {
             std::string e = "GetRmCpuParameters returned " + std::to_string(rmRc);
             if (BufferEmpty(rm)) e += " (empty SMU buffer; limits not invented)";
             if (!devs.cpu) e += "; CGraniteCPU not bound";
@@ -718,6 +777,7 @@ int main(int argc, char** argv) {
         }
         j.endObj();
         WriteOut(j.str());
+        if (cmd == "caps") return 0;
         return rmOk ? 0 : 1;
     }
 
@@ -743,6 +803,9 @@ int main(int argc, char** argv) {
             GetBiosInt(devs.bios, kBiosGetTrp, &trp);
             GetBiosInt(devs.bios, kBiosGetTras, &tras);
             GetBiosInt(devs.bios, kBiosGetTrfc, &trfc);
+            // FCLK from GetRmCpuParameters layout (RmFullStats.FclkP0 @ offset 68). Never invent UCLK.
+            float fclk = F32(rm, 68);
+            bool fclkOk = FiniteF(fclk) && fclk >= 800.f && fclk <= 2200.f;
             Json ram;
             ram.beginObj();
             ram.numi("mem_clock_mhz", clk);
@@ -753,6 +816,8 @@ int main(int argc, char** argv) {
             ram.numi("tras", tras);
             ram.numi("trfc", trfc);
             ram.boolean("expo", false);
+            if (clk > 0) ram.numi("mclk_mhz", clk);
+            if (fclkOk) ram.numi("fclk_mhz", static_cast<long long>(fclk + 0.5f));
             ram.endObj();
             Json j;
             j.beginObj();
@@ -848,6 +913,7 @@ int main(int argc, char** argv) {
     auto offsets = ParseCoList(Arg(argc, argv, "--co", ""));
 
     std::string err;
+    std::string biosNote;
     bool session = false;
     bool biosOk = false;
     bool coWritten = offsets.empty();
@@ -921,7 +987,14 @@ int main(int argc, char** argv) {
                 }
             }
             int fuse = SehCallB(api.SetOCFuseStatus, true);
+            // Scalar is reported honestly via note; PPT/TDC/EDC + CO gate bios_persisted.
+            // Some RM builds return non-zero for scalar while PBO/CO wrote successfully.
             biosOk = (bPpt == 0 && bTdc == 0 && bEdc == 0 && coBiosOk);
+            if (bSc != 0 && biosOk) {
+                if (!biosNote.empty()) biosNote += "; ";
+                biosNote += "SetPBOScalar_BIOS=" + std::to_string(bSc)
+                    + " (reported; does not alone clear bios_persisted)";
+            }
             if (!biosOk) {
                 std::ostringstream e;
                 e << "BIOS persist failed: CDefaultBIOS::SetPPTLimit_BIOS=" << bPpt
@@ -941,12 +1014,17 @@ int main(int argc, char** argv) {
     j.boolean("ok", session && err.empty() && (persist != "bios" || biosOk));
     j.boolean("session_applied", session);
     j.boolean("bios_persisted", biosOk);
+    j.boolean("requires_reboot", biosOk);
     j.boolean("co_written", coWritten);
     j.str("backend", "amd-ryzen-master");
     j.str("driver", drv);
     j.boolean("elevated", IsElevated());
     j.str("cpu_rtti", devs.cpuName);
     j.str("bios_rtti", devs.biosName);
+    j.boolean("co_bind", devs.cpu != nullptr);
+    j.boolean("bios_bind", devs.bios != nullptr);
+    EmitCapabilities(j, session || !BufferEmpty(rm), devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0,
+                     api.platform, api.device);
     j.boolean("pbo_enabled", pbo);
     j.numi("ppt_watts", ppt);
     j.numi("tdc_amps", tdc);
@@ -959,6 +1037,8 @@ int main(int argc, char** argv) {
     j.numi("fmax_mhz", fmax);
     if (err.empty()) j.null("error");
     else j.str("error", err);
+    if (!biosNote.empty()) j.str("note", biosNote);
+    else j.null("note");
     EmitCores(j, offsets.empty() ? co : offsets);
     j.endObj();
     WriteOut(j.str());

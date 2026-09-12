@@ -1,0 +1,42 @@
+ZENLOOP END-USER LICENSE AGREEMENT (summary + full terms)
+
+Software: ZenLoop
+License of source: MIT (see LICENSE)
+Version of this EULA text: 1
+
+IMPORTANT — READ BEFORE USING
+
+ZenLoop is software that changes CPU, GPU, and optionally BIOS memory parameters on your PC.
+By installing or running ZenLoop you agree to the following:
+
+1. NO WARRANTY. ZenLoop is provided “AS IS”, without warranty of any kind, express or implied,
+   including merchantability, fitness for a particular purpose, and non-infringement.
+
+2. ASSUMPTION OF RISK. Overclocking, undervolting, PBO / Curve Optimizer changes, GPU voltage
+   and clock changes, and BIOS mailbox writes can cause system crashes, driver timeouts (TDR),
+   blue screens, data loss, failed POST, or hardware damage. You accept full responsibility.
+
+3. NOT AFFILIATED WITH AMD. ZenLoop is an independent project. It is not endorsed by Advanced
+   Micro Devices, Inc. AMD, Ryzen, Radeon, Adrenalin, and Ryzen Master are trademarks of their
+   respective owners and are used only to describe compatibility.
+
+4. DEPENDENCIES. ZenLoop requires Windows 10/11 x64, Administrator rights, AMD Software
+   (Adrenalin) for GPU control via ADLX, and AMD Ryzen Master for CPU/BIOS mailbox control.
+   ZenLoop does not redistribute AMD drivers.
+
+5. BIOS AND RAM WRITES. Persistent BIOS and RAM timing writes require your explicit confirmation
+   in the UI. ZenLoop refuses silent BIOS success. A reboot is required for firmware values.
+   Full UEFI restore / CLR_CMOS is your responsibility if the system will not POST.
+
+6. SUPPORTED HARDWARE. This release targets AMD Ryzen CPUs and AMD Radeon GPUs. Intel CPUs and
+   NVIDIA GPUs are unsupported for hardware control.
+
+7. LICENSE OF SOURCE. Source code is available under the MIT License. This EULA does not reduce
+   the MIT grant for the source; it states additional risk acknowledgements for running the
+   binary and changing hardware settings.
+
+8. LIMITATION OF LIABILITY. To the maximum extent permitted by law, authors and contributors
+   are not liable for any damages arising from use of ZenLoop.
+
+If you do not agree, do not run Optimize, do not apply SMU/BIOS changes, and uninstall/delete
+the application folder.

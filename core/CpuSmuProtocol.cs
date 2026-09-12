@@ -36,6 +36,8 @@ public static class CpuSmuProtocol
 
     public static IReadOnlyList<string> InfoArgs() => ["info"];
 
+    public static IReadOnlyList<string> CapsArgs() => ["caps"];
+
     public static IReadOnlyList<string> TelemetryArgs(int seconds)
         => ["telemetry", "--seconds", Math.Clamp(seconds, 1, 600).ToString()];
 
@@ -78,13 +80,18 @@ public static class CpuSmuProtocol
             session = false;
         if (bios && !coWritten && root.TryGetProperty("co_written", out _))
             bios = false;
+        bool boostApplied = Bool(root, "boost_override_applied");
+        bool requiresReboot = Bool(root, "requires_reboot") || bios;
         return new ApplyResult
         {
             SessionApplied = session,
             BiosPersisted = bios,
             CoWritten = coWritten,
+            RequiresReboot = requiresReboot,
+            BoostOverrideApplied = boostApplied,
             Backend = Str(root, "backend") ?? "amd-ryzen-master",
             Error = string.IsNullOrEmpty(err) ? null : err,
+            Note = Str(root, "note") ?? Str(root, "boost_override_note"),
         };
     }
 

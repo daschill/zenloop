@@ -4,7 +4,15 @@ Windows app that auto undervolts and overclocks **AMD Ryzen + Radeon**, then sho
 
 **Supported entry:** `ZenLoop.exe` (C# WPF). Publish with `publish.ps1`, or use `ZenLoop-UI.cmd` from a build tree. The Python CLI (`zenloop.cmd` / `python -m zenloop`) is **deprecated** and kept only for legacy helper debugging — do not use it as the daily product path.
 
-Download, double-click `ZenLoop.exe`, approve Administrator once, click **Optimize this PC**. No HWiNFO, Python, or extra tuners required for the WPF flow.
+Download, double-click `ZenLoop.exe`, approve Administrator once, accept the first-run safety/EULA prompt, click **Optimize this PC**. No HWiNFO, Python, or extra tuners required for the WPF flow.
+
+Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON backup (Adrenalin/RM-style). Intel CPUs and NVIDIA GPUs are unsupported for hardware control — the UI says so honestly.
+
+**Curve Shaper** (Ryzen 9000) is capability-gated: ZenLoop probes Platform/Device for a real C export; if absent, the UI stays disabled with an honest reason (no invented bands).
+
+**RAM guidance** shows primaries + FCLK/MCLK when readable, EXPO-first steps, and soft warnings — not a fake DDR5 calculator.
+
+**Metrics JSON** for RTSS/HWiNFO users: `%LocalAppData%\ZenLoop\zenloop-metrics.json` (see `docs/METRICS-EXPORT.md`). Not an in-app OSD.
 
 ## Requirements (Windows AMD PC)
 
@@ -39,7 +47,9 @@ cd zenloop
 powershell -ExecutionPolicy Bypass -File .\publish.ps1
 ```
 
-Then copy `dist\ZenLoop\` anywhere and double-click `ZenLoop.exe`. One UAC at launch. Click **Optimize this PC**.
+Then copy `dist\ZenLoop\` anywhere (or unzip `dist\ZenLoop-*-win-x64.zip`) and double-click `ZenLoop.exe`. One UAC at launch. Accept EULA on first run. Click **Optimize this PC**.
+
+The publish folder includes `EULA.txt`, `DISCLAIMER.txt`, `LICENSE`, and `README.txt`. Builds are unsigned by default (see `docs/PACKAGING.md`).
 
 Profiles and benches save under `%LocalAppData%\ZenLoop` when you run the published folder.
 
@@ -97,8 +107,13 @@ GitHub Actions (`.github/workflows/ci.yml`) restores/builds the solution on `win
 
 ## Recover
 
+See **[docs/RECOVERY.md](docs/RECOVERY.md)** (also shipped as `RECOVERY.md` next to `ZenLoop.exe`). About → **No** opens the guide.
+
 - GPU: Adrenalin → Tuning → Default, or the in-app factory reset
+- Clear session Curve Optimizer (CO=0 this boot) — not a full UEFI reset
 - Whole system will not POST: CLR_CMOS, load Optimized Defaults, re-enable EXPO
+
+Installer scripts (unsigned Inno / MSIX) and update-check notes: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 ## License
 

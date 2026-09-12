@@ -19,12 +19,21 @@
                 <StackPanel Orientation="Horizontal">
                     <Border Width="5" CornerRadius="2" Background="{StaticResource Accent}" Margin="0,2,12,2"/>
                     <StackPanel>
-                        <TextBlock FontSize="22" FontWeight="Bold">ZENLOOP</TextBlock>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontSize="22" FontWeight="Bold" Text="ZENLOOP"/>
+                            <TextBlock x:Name="TxtVersion" Style="{StaticResource Label}" Margin="10,8,0,0" VerticalAlignment="Center" Text=""/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Margin="0,2,0,0"
+                                   Text="One-click Optimize for AMD Ryzen + Radeon"/>
                         <TextBlock x:Name="TxtSubtitle" Style="{StaticResource Label}" Margin="0,2,0,0"
-                                   Text="Ryzen 7 9800X3D  ·  Radeon RX 7900 XTX"/>
+                                   Text="Detecting GPU…"/>
+                        <TextBlock x:Name="TxtPlatformHint" Style="{StaticResource Label}" Margin="0,4,0,0"
+                                   Foreground="{StaticResource Warn}" Text="" TextWrapping="Wrap" MaxWidth="720"/>
                     </StackPanel>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="About" Padding="12,6" Margin="0,0,10,0" Click="OnAbout"
+                            ToolTip="Version, EULA, disclaimer, and recovery notes"/>
                     <Border x:Name="PillAdmin" CornerRadius="10" Padding="10,4" Background="#3A2410" Margin="0,0,8,0">
                         <TextBlock x:Name="TxtAdmin" Text="USER" Style="{StaticResource Label}" Foreground="{StaticResource Warn}"/>
                     </Border>
@@ -164,7 +173,7 @@
                         <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold"
                                    Text="Precision Boost Overdrive"/>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Margin="0,2,0,8"
-                                   Text="Writes Precision Boost Overdrive + per-core Curve Optimizer into AMD BIOS from Windows (Ryzen Master mailbox). Approve UAC. Reboot after a successful BIOS write."
+                                   Text="Session SMU + optional BIOS persist (Ryzen Master mailbox). Boost override is not available from Windows. Approve UAC for writes. Reboot after a successful BIOS write."
                                    TextWrapping="Wrap"/>
                         <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
                             <Grid>
@@ -185,8 +194,21 @@
                                 <Button x:Name="BtnPboTune" Content="Auto-tune CO" Style="{StaticResource GoodButton}" Click="OnPboTune"/>
                                 <Button Grid.Column="2" x:Name="BtnPboRead" Content="Read SMU" Click="OnPboRead"/>
                             </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnPboClearSession" Content="Clear session CO" Click="OnPboClearSession"
+                                        ToolTip="Sets Curve Optimizer offsets to 0 for this Windows session only. Does not undo BIOS."/>
+                                <Button Grid.Column="2" x:Name="BtnPboStockBios" Content="Write stock BIOS" Click="OnPboStockBios"
+                                        ToolTip="Writes CO=0 + current PPT/TDC/EDC into AMD BIOS mailbox. Not a full UEFI reset — CLR_CMOS for that."/>
+                            </Grid>
                             <TextBlock x:Name="TxtPboBackend" Style="{StaticResource Label}" Margin="0,6,0,0" TextWrapping="Wrap"
                                        Text="SMU: connecting…"/>
+                            <TextBlock x:Name="TxtControlCaps" Style="{StaticResource Label}" Margin="0,4,0,0" TextWrapping="Wrap"
+                                       Text="Capabilities: probing…"/>
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,0,0,8">
                             <StackPanel>
@@ -207,10 +229,14 @@
                                 </Grid>
                                 <Slider x:Name="SldEdc" Minimum="90" Maximum="640" TickFrequency="1" IsSnapToTickEnabled="True" Value="170" ValueChanged="OnPboSlider"/>
                                 <Grid Margin="0,8,0,4">
-                                    <TextBlock Style="{StaticResource Label}" Text="boost override"/>
+                                    <TextBlock Style="{StaticResource Label}" Text="boost override (N/A from Windows)"/>
                                     <TextBlock x:Name="LblBoost" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="+200 MHz"/>
                                 </Grid>
-                                <Slider x:Name="SldBoost" Minimum="0" Maximum="200" TickFrequency="25" IsSnapToTickEnabled="True" Value="200" ValueChanged="OnPboSlider"/>
+                                <Slider x:Name="SldBoost" Minimum="0" Maximum="200" TickFrequency="25" IsSnapToTickEnabled="True" Value="200"
+                                        IsEnabled="False" Opacity="0.55" ValueChanged="OnPboSlider"
+                                        ToolTip="Not applied: AMD Platform.dll has no C export for PBO boost override."/>
+                                <TextBlock Style="{StaticResource Label}" Margin="0,0,0,4" TextWrapping="Wrap"
+                                           Text="Boost override cannot be written from Windows (no RM C API). Slider kept for profile display only."/>
                                 <Grid Margin="0,8,0,4">
                                     <TextBlock Style="{StaticResource Label}" Text="PBO SCALAR"/>
                                     <TextBlock x:Name="LblScalar" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="1x"/>
@@ -221,9 +247,18 @@
                                            Text="Negative = undervolt. Auto-tune searches each logical core from per-core stability."/>
                                 <StackPanel x:Name="CorePanel"/>
 
+                                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="Curve Shaper (Ryzen 9000)"/>
+                                <TextBlock x:Name="TxtCurveShaper" Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                           Text="Curve Shaper: probing…"/>
+                                <Button x:Name="BtnCurveShaperApply" Content="Apply Curve Shaper" Margin="0,0,0,4"
+                                        IsEnabled="False" Opacity="0.55" Click="OnCurveShaperApply"
+                                        ToolTip="Requires a real AMD Curve Shaper C export. Disabled when Platform/Device lack the API."/>
+
                                 <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="RAM timings (BIOS)"/>
                                 <TextBlock Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
-                                           Text="DDR5 via AMD BIOS mailbox (same as Ryzen Master). Write RAM BIOS then reboot. EXPO off for manual primaries."/>
+                                           Text="DDR5 via AMD BIOS mailbox (same as Ryzen Master). EXPO first, then tighten one primary at a time. Write RAM BIOS then reboot. Not a fake DDR5 calculator."/>
+                                <TextBlock x:Name="TxtRamPrimaries" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="Primaries: read RAM to load live CL-tRCD-tRP-tRAS / tRFC / FCLK"/>
                                 <CheckBox x:Name="ChkExpo" Content="EXPO profile" Margin="0,0,0,8"/>
                                 <Grid Margin="0,4,0,4">
                                     <TextBlock Style="{StaticResource Label}" Text="MEM CLOCK"/>
@@ -269,6 +304,9 @@
                                     <Button x:Name="BtnRamRead" Content="Read RAM" Click="OnRamRead"/>
                                     <Button Grid.Column="2" x:Name="BtnRamWrite" Content="Write RAM BIOS" Style="{StaticResource AccentButton}" Click="OnRamWrite"/>
                                 </Grid>
+                                <TextBlock x:Name="TxtRamGuidance" Style="{StaticResource Label}" Margin="0,10,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="RAM: start from EXPO, tighten slowly. ZenLoop writes primary timings via Ryzen Master; verify with ZenTimings after reboot."/>
                             </StackPanel>
                         </ScrollViewer>
                     </DockPanel>
@@ -286,9 +324,10 @@
                         <StackPanel>
                             <TextBlock FontSize="15" FontWeight="SemiBold" Text="Auto overclock / undervolt"/>
                             <TextBlock Style="{StaticResource Label}" Margin="0,2,0,12"
-                                       Text="One click: restore stock, benchmark, tune GPU + CPU, benchmark again. Shows faster / cooler / less power."/>
+                                       Text="One click: restore stock, benchmark, tune GPU + CPU (confirmed), benchmark again. Shows faster / cooler / less power."/>
                             <Button x:Name="BtnOptimize" Content="Optimize this PC" Style="{StaticResource AccentButton}"
-                                    Margin="0,0,0,12" Click="OnOptimize"/>
+                                    Margin="0,0,0,12" Click="OnOptimize"
+                                    ToolTip="Stock reset → baseline bench → GPU UV/OC → per-core CO + all-core confirm → tuned bench"/>
 
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -298,10 +337,11 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource Label}" Text="GOAL"/>
-                                    <ComboBox x:Name="CmbGoal" Margin="0,4,0,0" SelectedIndex="0">
-                                        <ComboBoxItem Content="Balanced"/>
-                                        <ComboBoxItem Content="Performance"/>
-                                        <ComboBoxItem Content="Efficiency"/>
+                                    <ComboBox x:Name="CmbGoal" Margin="0,4,0,0" SelectedIndex="0"
+                                              ToolTip="Balanced: UV + mild OC. Performance: UV + max clocks. Efficiency: UV + lower clocks for work/W.">
+                                        <ComboBoxItem Content="Balanced" ToolTip="Undervolt, then a mild core overclock (not max)."/>
+                                        <ComboBoxItem Content="Performance" ToolTip="Undervolt, then push core/VRAM clocks toward the limit."/>
+                                        <ComboBoxItem Content="Efficiency" ToolTip="Undervolt, then try stock and lower core clocks for more work/W."/>
                                     </ComboBox>
                                 </StackPanel>
                                 <StackPanel Grid.Column="2">
@@ -315,8 +355,13 @@
 
                             <CheckBox x:Name="ChkSkipVram" Content="Skip VRAM search (faster)" Margin="0,10,0,4"/>
                             <CheckBox x:Name="ChkApplyOnStart" Content="Apply saved GPU + CPU on launch" IsChecked="True" Click="OnSettingsChanged"/>
+                            <CheckBox x:Name="ChkAppAutoApply" Content="Auto-apply per-app pack when matched exe is focused" Click="OnAppAutoApplyChanged"
+                                      ToolTip="Default off. When enabled, ZenLoop watches the foreground window and applies the bound tune pack (debounced; never during Optimize)."/>
                             <CheckBox x:Name="ChkStartWithWindows" Content="Start with Windows" Click="OnSettingsChanged"/>
-                            <CheckBox x:Name="ChkTray" Content="Minimize to tray" IsChecked="True" Click="OnSettingsChanged" Margin="0,0,0,12"/>
+                            <CheckBox x:Name="ChkTray" Content="Minimize to tray" IsChecked="True" Click="OnSettingsChanged"/>
+                            <CheckBox x:Name="ChkStartupUpdateCheck" Content="Check for updates on startup (silent)"
+                                      ToolTip="Optional. Default off. Uses tray balloon + log when a newer version.json is published — no modal dialog."
+                                      Click="OnSettingsChanged" Margin="0,0,0,12"/>
 
                             <UniformGrid Columns="3" Rows="3" Margin="0,0,0,10">
                                 <Button x:Name="BtnAutoGpu" Content="Auto GPU UV + OC" Style="{StaticResource AccentButton}" Margin="0,0,8,8" Click="OnAutoGpu"/>
@@ -326,15 +371,28 @@
                                 <Button x:Name="BtnStressCpu" Content="Stress CPU" Margin="0,0,8,8" Click="OnStressCpu"/>
                                 <Button x:Name="BtnSoak" Content="Soak 3 min" Margin="0,0,0,8" Click="OnSoak"/>
                                 <Button x:Name="BtnPerCore" Content="Per-core CPU" Margin="0,0,8,0" Click="OnPerCore"/>
-                                <Button x:Name="BtnApplyProfile" Content="Apply GPU + CPU" Margin="0,0,8,0" Click="OnApplyProfile"/>
+                                <Button x:Name="BtnApplyProfile" Content="Restore last tune" Margin="0,0,8,0" Click="OnApplyProfile"
+                                        ToolTip="Re-apply saved GPU startup profile and CPU PBO (undo factory reset of a prior tune)."/>
                                 <Button x:Name="BtnCpuUnder" Content="CPU cap 95%" Margin="0" Click="OnCpuCap"/>
                             </UniformGrid>
                             <UniformGrid Columns="2" Rows="1" Margin="0,0,0,8">
                                 <Button x:Name="BtnBenchBase" Content="Bench baseline" Margin="0,0,8,0" Click="OnBenchBaseline"/>
                                 <Button x:Name="BtnBenchNow" Content="Bench current" Click="OnBenchCurrent"/>
                             </UniformGrid>
+                            <UniformGrid Columns="2" Rows="1" Margin="0,0,0,8">
+                                <Button x:Name="BtnExportPack" Content="Export tune pack" Margin="0,0,8,0" Click="OnExportPack"
+                                        ToolTip="Save GPU + CPU PBO/CO + RAM profiles as one JSON file (Adrenalin/RM-style backup)."/>
+                                <Button x:Name="BtnImportPack" Content="Import tune pack" Click="OnImportPack"
+                                        ToolTip="Load a ZenLoop profile pack into saved profiles (does not auto-apply until you Restore / Apply)."/>
+                            </UniformGrid>
+                            <Button x:Name="BtnBindAppProfile" Content="Bind current pack to app…" Margin="0,0,0,8" Click="OnBindAppProfile"
+                                    ToolTip="Map an .exe to a tune pack. Enable auto-apply above to hot-apply when that app is focused."/>
+                            <TextBlock x:Name="TxtAppProfiles" Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                       Text="Per-app profiles: off (bind a pack to an exe, then enable auto-apply)."/>
                             <TextBlock x:Name="TxtBench" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
-                                       Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer → tuned bench. CPU PPT from Ryzen Master; GPU board power from ADLX. No extra tools."/>
+                                       Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer (all-core confirm) → tuned bench. Results stay here after Optimize."/>
+                            <TextBlock x:Name="TxtHistory" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
+                                       Text="Optimize history: none yet."/>
                             <TextBlock x:Name="TxtCores" Style="{StaticResource Label}" Margin="0,0,0,8" Text="Per-core CO: not run yet. Failed cores need a weaker BIOS Curve Optimizer offset." TextWrapping="Wrap"/>
 
                             <Grid Margin="0,4,0,0">
@@ -343,8 +401,10 @@
                                     <ColumnDefinition Width="12"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <ProgressBar x:Name="Bar" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="2" x:Name="TxtStep" Style="{StaticResource Label}" Text="idle" VerticalAlignment="Center"/>
+                                <ProgressBar x:Name="Bar" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center"
+                                             ToolTip="Optimize progress (monotonic during a run)."/>
+                                <TextBlock Grid.Column="2" x:Name="TxtStep" Style="{StaticResource Label}" Text="idle" VerticalAlignment="Center"
+                                           MaxWidth="280" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                             </Grid>
                         </StackPanel>
                     </Border>

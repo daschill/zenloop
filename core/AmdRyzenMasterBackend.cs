@@ -154,8 +154,59 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
         return json;
     }
 
+    /// <summary>
+    /// Curve Shaper apply is refused unless capabilities report a real C export.
+    /// Never invents band offsets.
+    /// </summary>
+    public ApplyResult ApplyCurveShaper(CurveShaperProfile profile, bool available)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        if (!available)
+        {
+            return new ApplyResult
+            {
+                SessionApplied = false,
+                BiosPersisted = false,
+                CoWritten = false,
+                Backend = Name,
+                Error = CurveShaperSupport.UnavailableReason,
+                Note = CurveShaperSupport.BiosNote,
+            };
+        }
+        // Real export path would call zenloop-cpu cs-apply here when AMD ships a C API.
+        return new ApplyResult
+        {
+            SessionApplied = false,
+            BiosPersisted = false,
+            CoWritten = false,
+            Backend = Name,
+            Error = "Curve Shaper C export was reported but zenloop-cpu cs-apply is not wired yet.",
+            Note = CurveShaperSupport.BiosNote,
+        };
+    }
+
+    public CurveShaperProfile? ReadCurveShaper(bool available)
+    {
+        if (!available) return null;
+        try
+        {
+            var json = _run(["cs-read"]);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("ok", out var ok) && ok.ValueKind == System.Text.Json.JsonValueKind.False)
+                return null;
+            if (root.TryGetProperty("curve_shaper", out var cs) && cs.ValueKind == System.Text.Json.JsonValueKind.Object)
+                return CurveShaperProfile.Parse(cs.GetRawText());
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     static bool IsInfo(IReadOnlyList<string> args)
-        => args.Count > 0 && args[0] is "info" or "read" or "telemetry" or "ram-read";
+        => args.Count > 0 && args[0] is "info" or "read" or "telemetry" or "ram-read" or "caps" or "cs-read";
 
     static string RunDirect(string exe, IReadOnlyList<string> args, int timeoutMs)
     {

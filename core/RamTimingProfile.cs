@@ -30,6 +30,21 @@ public sealed class RamTimingProfile
     [JsonPropertyName("expo")]
     public bool Expo { get; set; }
 
+    /// <summary>Fabric clock MHz when Ryzen Master reports it; null if unread.</summary>
+    [JsonPropertyName("fclk_mhz")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? FclkMhz { get; set; }
+
+    /// <summary>UCLK MHz when readable; null if unread (never invented).</summary>
+    [JsonPropertyName("uclk_mhz")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? UclkMhz { get; set; }
+
+    /// <summary>MCLK MHz when distinctly reported; otherwise UI treats mem_clock_mhz as MCLK.</summary>
+    [JsonPropertyName("mclk_mhz")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MclkMhz { get; set; }
+
     [JsonIgnore]
     public int DataRateMts => MemClockMhz * 2;
 
@@ -103,6 +118,8 @@ public static class RamTimingProtocol
     {
         int I(string n, int d) =>
             obj.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : d;
+        int? Opt(string n) =>
+            obj.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
         return new RamTimingProfile
         {
             MemClockMhz = I("mem_clock_mhz", 3000),
@@ -113,6 +130,9 @@ public static class RamTimingProtocol
             Tras = I("tras", 76),
             Trfc = I("trfc", 560),
             Expo = obj.TryGetProperty("expo", out var e) && e.ValueKind == JsonValueKind.True,
+            FclkMhz = Opt("fclk_mhz"),
+            UclkMhz = Opt("uclk_mhz"),
+            MclkMhz = Opt("mclk_mhz") ?? (I("mem_clock_mhz", 0) > 0 ? I("mem_clock_mhz", 0) : null),
         };
     }
 
