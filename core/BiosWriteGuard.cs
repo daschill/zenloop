@@ -29,6 +29,11 @@ public static class BiosWriteGuard
 
     public const string CurveShaperUnavailableNote = CurveShaperSupport.UnavailableReason;
 
+    public const string CurveShaperWarning =
+        "This would apply Curve Shaper band offsets through AMD Ryzen Master when a published C ABI exists.\n\n"
+        + "ZenLoop never invents band values. Requires Administrator. Confirm each write. "
+        + "If CS is unavailable, use signed PBO + Curve Optimizer instead.";
+
     /// <summary>Refuse BIOS-mode apply when the process is not elevated and elevation is not allowed.</summary>
     public static ApplyResult? RefuseIfCannotPersistBios(PersistMode persist, bool isAdministrator, bool allowElevate)
     {

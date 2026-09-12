@@ -155,8 +155,8 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
     }
 
     /// <summary>
-    /// Curve Shaper apply is refused unless capabilities report a real C export.
-    /// Never invents band offsets.
+    /// Curve Shaper apply is refused unless capabilities report a real C export
+    /// with a published ABI. Never invents band offsets.
     /// </summary>
     public ApplyResult ApplyCurveShaper(CurveShaperProfile profile, bool available)
     {
@@ -170,19 +170,40 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
                 CoWritten = false,
                 Backend = Name,
                 Error = CurveShaperSupport.UnavailableReason,
+                Note = CurveShaperAlternative.Summary,
+            };
+        }
+
+        try
+        {
+            var args = new List<string> { "cs-apply", "--enabled", profile.Enabled ? "1" : "0" };
+            if (profile.Bands.Count > 0)
+            {
+                var parts = profile.Bands
+                    .OrderBy(b => b.Band)
+                    .Select(b => b.SignedOffset.ToString());
+                args.Add("--bands");
+                args.Add(string.Join(",", parts));
+            }
+            var json = _run(args);
+            var r = ParseCurveShaperApply(json);
+            // Session-style CS write still goes through BiosWriteGuard hygiene (no silent success).
+            return BiosWriteGuard.EnsureNoSilentBiosSuccess(
+                r,
+                r.BiosPersisted ? PersistMode.Bios : PersistMode.Session);
+        }
+        catch (Exception ex)
+        {
+            return new ApplyResult
+            {
+                SessionApplied = false,
+                BiosPersisted = false,
+                CoWritten = false,
+                Backend = Name,
+                Error = "Curve Shaper apply failed: " + ex.Message,
                 Note = CurveShaperSupport.BiosNote,
             };
         }
-        // Real export path would call zenloop-cpu cs-apply here when AMD ships a C API.
-        return new ApplyResult
-        {
-            SessionApplied = false,
-            BiosPersisted = false,
-            CoWritten = false,
-            Backend = Name,
-            Error = "Curve Shaper C export was reported but zenloop-cpu cs-apply is not wired yet.",
-            Note = CurveShaperSupport.BiosNote,
-        };
     }
 
     public CurveShaperProfile? ReadCurveShaper(bool available)
@@ -203,6 +224,29 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
         {
             return null;
         }
+    }
+
+    static ApplyResult ParseCurveShaperApply(string json)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        var err = root.TryGetProperty("error", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String
+            ? e.GetString()
+            : null;
+        bool session = root.TryGetProperty("session_applied", out var s) && s.ValueKind == System.Text.Json.JsonValueKind.True;
+        bool bios = root.TryGetProperty("bios_persisted", out var b) && b.ValueKind == System.Text.Json.JsonValueKind.True;
+        bool ok = root.TryGetProperty("ok", out var o) && o.ValueKind == System.Text.Json.JsonValueKind.True;
+        return new ApplyResult
+        {
+            SessionApplied = session || (ok && string.IsNullOrEmpty(err)),
+            BiosPersisted = bios,
+            CoWritten = false,
+            Backend = "amd-ryzen-master",
+            Error = string.IsNullOrEmpty(err)
+                ? (ok ? null : CurveShaperSupport.SignatureUnknownNote)
+                : err,
+            Note = CurveShaperSupport.BiosNote,
+        };
     }
 
     static bool IsInfo(IReadOnlyList<string> args)

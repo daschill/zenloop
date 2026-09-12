@@ -5,6 +5,7 @@
 
 #define NOMINMAX
 #include <Windows.h>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -616,10 +617,58 @@ static void EmitCores(Json& j, const std::vector<short>& co) {
     j.endArr();
 }
 
-static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, bool drvOk, bool supported,
-                             HMODULE platform, HMODULE device) {
-    bool curveShaper = false;
-    std::string csFound;
+static bool ExportNameLooksLikeCurveShaper(const char* name) {
+    if (!name || !*name) return false;
+    // Undecorate simple stdcall/fastcall decorations: _Name@N / Name@N
+    std::string s = name;
+    if (!s.empty() && s[0] == '_') s.erase(0, 1);
+    auto at = s.find('@');
+    if (at != std::string::npos) s = s.substr(0, at);
+    // MSVC C++ mangling often embeds the identifier after '?' / '@'
+    auto lower = s;
+    for (char& c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    if (lower.find("curveshaper") != std::string::npos) return true;
+    if (lower.find("curve_shaper") != std::string::npos) return true;
+    if (lower.find("getcsparameter") != std::string::npos) return true;
+    if (lower.find("setcsparameter") != std::string::npos) return true;
+    // Avoid matching unrelated "CS" substrings inside longer tokens.
+    if (lower == "getcsparameters" || lower == "setcsparameters") return true;
+    if (lower.find("csbands") != std::string::npos) return true;
+    return false;
+}
+
+// Enumerate PE export names (IMAGE_EXPORT_DIRECTORY). Returns count scanned.
+static int EnumPeExports(HMODULE mod, std::vector<std::string>* outNames) {
+    if (!mod || !outNames) return 0;
+    auto base = reinterpret_cast<const uint8_t*>(mod);
+    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    auto nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (dir.VirtualAddress == 0 || dir.Size == 0) return 0;
+    auto exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    auto names = reinterpret_cast<const DWORD*>(base + exp->AddressOfNames);
+    int n = static_cast<int>(exp->NumberOfNames);
+    for (int i = 0; i < n; i++) {
+        const char* nm = reinterpret_cast<const char*>(base + names[i]);
+        if (nm && *nm) outNames->emplace_back(nm);
+    }
+    return n;
+}
+
+struct CurveShaperProbe {
+    bool found = false;
+    std::string match;
+    std::string matchDll; // "Platform.dll" | "Device.dll"
+    int platformExports = 0;
+    int deviceExports = 0;
+    int namedHits = 0;
+    int peHits = 0;
+};
+
+static CurveShaperProbe ProbeCurveShaperExports(HMODULE platform, HMODULE device) {
+    CurveShaperProbe p;
     static const char* kCsNames[] = {
         "GetCurveShaper", "SetCurveShaper",
         "GetCurveShaperParameters", "SetCurveShaperParameters",
@@ -627,16 +676,62 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
         "GetCSParameters", "SetCSParameters",
         "GetCurveShaperStatus", "SetCurveShaperStatus",
         "GetCurveShaperBands", "SetCurveShaperBands",
+        "ReadCurveShaper", "WriteCurveShaper",
+        "GetCurveShaperOffset", "SetCurveShaperOffset",
+        "ApplyCurveShaper", "QueryCurveShaper",
+        // Common MSVC mangled forms seen in RM-era Device.dll experiments (still GetProcAddress'd).
+        "?GetCurveShaper@@YAHXZ",
+        "?SetCurveShaper@@YAHH@Z",
+        "?GetCurveShaperParameters@@YAHPEAX@Z",
+        "?SetCurveShaperParameters@@YAHPEAX@Z",
         nullptr
     };
     for (int i = 0; kCsNames[i]; i++) {
-        if ((platform && GetProcAddress(platform, kCsNames[i])) ||
-            (device && GetProcAddress(device, kCsNames[i]))) {
-            curveShaper = true;
-            csFound = kCsNames[i];
+        if (platform && GetProcAddress(platform, kCsNames[i])) {
+            p.found = true;
+            p.match = kCsNames[i];
+            p.matchDll = "Platform.dll";
+            p.namedHits++;
+            break;
+        }
+        if (device && GetProcAddress(device, kCsNames[i])) {
+            p.found = true;
+            p.match = kCsNames[i];
+            p.matchDll = "Device.dll";
+            p.namedHits++;
             break;
         }
     }
+
+    std::vector<std::string> pe;
+    p.platformExports = EnumPeExports(platform, &pe);
+    for (const auto& nm : pe) {
+        if (!ExportNameLooksLikeCurveShaper(nm.c_str())) continue;
+        p.peHits++;
+        if (!p.found) {
+            p.found = true;
+            p.match = nm;
+            p.matchDll = "Platform.dll";
+        }
+    }
+    pe.clear();
+    p.deviceExports = EnumPeExports(device, &pe);
+    for (const auto& nm : pe) {
+        if (!ExportNameLooksLikeCurveShaper(nm.c_str())) continue;
+        p.peHits++;
+        if (!p.found) {
+            p.found = true;
+            p.match = nm;
+            p.matchDll = "Device.dll";
+        }
+    }
+    return p;
+}
+
+static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, bool drvOk, bool supported,
+                             HMODULE platform, HMODULE device) {
+    auto cs = ProbeCurveShaperExports(platform, device);
+    bool curveShaper = cs.found;
 
     j.key("capabilities");
     Json c;
@@ -656,11 +751,35 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
     c.boolean("supported_processor", supported);
     if (curveShaper) {
         c.str("curve_shaper_note",
-              std::string("Curve Shaper C export found: ") + csFound);
+              std::string("Curve Shaper C export found: ") + cs.match + " in " + cs.matchDll
+              + " (ABI not published — ZenLoop will not invent band writes)");
     } else {
         c.str("curve_shaper_note",
-              "no Platform.dll/Device.dll Curve Shaper C export (Ryzen Master GUI-only on Ryzen 9000; ZenLoop will not invent bands)");
+              "no Platform.dll/Device.dll Curve Shaper C export (exhaustive named+PE probe; "
+              "Ryzen Master GUI-only on Ryzen 9000; ZenLoop will not invent bands)");
     }
+    // Probe diagnostics for docs / support — never invents band values.
+    c.raw("curve_shaper_probe", [&]() {
+        Json pr;
+        pr.beginObj();
+        pr.boolean("found", cs.found);
+        pr.numi("platform_exports", cs.platformExports);
+        pr.numi("device_exports", cs.deviceExports);
+        pr.numi("named_hits", cs.namedHits);
+        pr.numi("pe_hits", cs.peHits);
+        if (cs.found) {
+            pr.str("match", cs.match);
+            pr.str("match_dll", cs.matchDll);
+        } else {
+            pr.null("match");
+            pr.null("match_dll");
+        }
+        pr.boolean("abi_published", false);
+        pr.str("alternative", "Use signed PBO + Curve Optimizer; see docs/CURVE-SHAPER.md");
+        pr.endObj();
+        return pr.str();
+    }());
+
     c.str("boost_override_note",
           "no Platform.dll C export for PBO boost override (GetCurrentFMaxCPU is read-only)");
     c.str("manual_all_core_oc_note",
@@ -675,7 +794,7 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
 int main(int argc, char** argv) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], "--out") == 0) gOut = argv[i + 1];
-    if (argc < 2) Fail("usage: zenloop-cpu info|read|caps|apply|ram-read|ram-apply|telemetry ...");
+    if (argc < 2) Fail("usage: zenloop-cpu info|read|caps|apply|ram-read|ram-apply|cs-read|cs-apply|telemetry ...");
     std::string cmd = argv[1];
 
     std::string drv;
@@ -899,6 +1018,38 @@ int main(int argc, char** argv) {
         j.endObj();
         WriteOut(j.str());
         return biosOk ? 0 : 1;
+    }
+
+    if (cmd == "cs-read" || cmd == "cs-apply") {
+        auto cs = ProbeCurveShaperExports(api.platform, api.device);
+        Json j;
+        j.beginObj();
+        j.boolean("ok", false);
+        j.boolean("session_applied", false);
+        j.boolean("bios_persisted", false);
+        j.boolean("co_written", false);
+        j.str("backend", "amd-ryzen-master");
+        j.boolean("elevated", IsElevated());
+        EmitCapabilities(j, !BufferEmpty(rm), devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0,
+                         api.platform, api.device);
+        if (!cs.found) {
+            j.str("error",
+                  "Curve Shaper unavailable: exhaustive Platform/Device export probe found no CS C symbol "
+                  "(use signed PBO + Curve Optimizer; see docs/CURVE-SHAPER.md)");
+            j.null("curve_shaper");
+            j.endObj();
+            WriteOut(j.str());
+            return 1;
+        }
+        // Export present but AMD has not published a C ABI — refuse invented band calls.
+        j.str("error",
+              std::string("Curve Shaper export matched (") + cs.match + " in " + cs.matchDll
+              + ") but no published C ABI — refusing " + cmd
+              + " (BiosWriteGuard: never invent band writes). Use Ryzen Master GUI or PBO/CO.");
+        j.null("curve_shaper");
+        j.endObj();
+        WriteOut(j.str());
+        return 1;
     }
 
     if (cmd != "apply") Fail("unknown command " + cmd);
