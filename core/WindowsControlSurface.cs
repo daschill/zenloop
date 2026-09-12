@@ -49,6 +49,13 @@ public sealed class WindowsControlCapabilities
     /// </summary>
     public bool BiosStockWrite { get; init; }
 
+    /// <summary>
+    /// Curve Shaper band read/write when Platform/Device expose a real C export; otherwise false (never invent bands).
+    /// </summary>
+    public bool CurveShaper { get; init; }
+
+    public string CurveShaperReason { get; init; } = CurveShaperSupport.UnavailableReason;
+
     public bool RequiresRebootAfterBios { get; init; } = true;
 
     public string Backend { get; init; } = "";
@@ -61,7 +68,7 @@ public sealed class WindowsControlCapabilities
             return string.IsNullOrEmpty(Error) ? "Control: helper unavailable" : "Control: " + Error;
         return $"Control  elev={Elevated}  session PBO={SessionPbo} CO={SessionCo}  "
             + $"BIOS PBO={BiosPbo} CO={BiosCo} RAM={BiosRam}  "
-            + $"boost={BoostOverride}  GPU session={GpuManual} BIOS={GpuBiosPersist}";
+            + $"CS={CurveShaper}  boost={BoostOverride}  GPU session={GpuManual} BIOS={GpuBiosPersist}";
     }
 
     public static WindowsControlCapabilities Unavailable(string? why = null)
@@ -69,12 +76,15 @@ public sealed class WindowsControlCapabilities
         {
             HelperAvailable = false,
             Error = why ?? "AMD Ryzen Master helper not available",
+            CurveShaper = false,
+            CurveShaperReason = CurveShaperSupport.UnavailableReason,
             Limitations =
             [
                 "CPU/SMU/BIOS control needs zenloop-cpu.exe + AMD Ryzen Master (Platform.dll / Device.dll).",
                 "GPU control needs zenloop-hw.exe + AMD Adrenalin (ADLX).",
                 "PBO boost override (+MHz) is not available via Platform.dll C exports.",
                 "GPU settings cannot be persisted into motherboard BIOS from Windows.",
+                CurveShaperSupport.UnavailableReason,
             ],
         };
 }
@@ -138,6 +148,14 @@ public sealed class WindowsControlSurface
         return result;
     }
 
+    /// <summary>Applies Curve Shaper only when <see cref="WindowsControlCapabilities.CurveShaper"/> is true.</summary>
+    public ApplyResult ApplyCurveShaper(CurveShaperProfile profile, WindowsControlCapabilities? caps = null)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        bool available = caps?.CurveShaper ?? false;
+        return _smu.ApplyCurveShaper(profile, available);
+    }
+
     /// <summary>Session-only: set every logical core Curve Optimizer offset to 0 (does not undo BIOS).</summary>
     public ApplyResult RestoreSessionStock(CpuPboProfile? seed = null, int? logicalCores = null)
     {
@@ -182,12 +200,16 @@ public sealed class WindowsControlSurface
             var biosPbo = CapsBool(caps, "bios_pbo", bios);
             var biosCo = CapsBool(caps, "bios_co", bios);
             var biosRam = CapsBool(caps, "bios_ram", bios);
+            var curveShaper = Bool(caps, "curve_shaper");
+            var csReason = Str(caps, "curve_shaper_note") ?? CurveShaperSupport.UnavailableReason;
             return Build(
                 helper: true,
                 elev, co, bios, drv, supported,
                 sessionPbo, sessionCo, biosPbo, biosCo, biosRam,
                 Bool(caps, "boost_override"),
                 Bool(caps, "manual_all_core_oc"),
+                curveShaper,
+                csReason,
                 gpu,
                 backend ?? Str(r, "backend") ?? "amd-ryzen-master",
                 ok ? null : Str(r, "error"));
@@ -203,6 +225,8 @@ public sealed class WindowsControlSurface
             biosRam: bios,
             boost: false,
             manualOc: false,
+            curveShaper: false,
+            curveShaperReason: CurveShaperSupport.UnavailableReason,
             gpu,
             backend ?? Str(r, "backend") ?? "amd-ryzen-master",
             ok ? null : Str(r, "error"));
@@ -223,6 +247,8 @@ public sealed class WindowsControlSurface
             biosRam: true,
             boost: false,
             manualOc: false,
+            curveShaper: false,
+            curveShaperReason: CurveShaperSupport.UnavailableReason,
             gpu,
             "loopback",
             null);
@@ -241,6 +267,8 @@ public sealed class WindowsControlSurface
         bool biosRam,
         bool boost,
         bool manualOc,
+        bool curveShaper,
+        string curveShaperReason,
         GpuControlProbe? gpu,
         string backend,
         string? error)
@@ -257,6 +285,8 @@ public sealed class WindowsControlSurface
             limits.Add("Boost override slider is display-only; ZenLoop will not claim it was applied.");
         if (!manualOc)
             limits.Add("SetOverclockFreqAllCores is loaded but not exposed (manual all-core lock ≠ PBO boost).");
+        if (!curveShaper)
+            limits.Add(curveShaperReason);
         if (gpu is { BiosPersist: false })
             limits.Add("GpuBiosPersist=false (ADLX cannot persist into BIOS).");
 
@@ -275,6 +305,8 @@ public sealed class WindowsControlSurface
             BiosRam = biosRam,
             BoostOverride = boost,
             ManualAllCoreOc = manualOc,
+            CurveShaper = curveShaper,
+            CurveShaperReason = curveShaperReason,
             GpuManual = gpu?.Manual ?? false,
             GpuFan = gpu?.Fan ?? false,
             GpuBiosPersist = false,

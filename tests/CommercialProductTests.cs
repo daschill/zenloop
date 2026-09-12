@@ -137,6 +137,7 @@ public class CommercialProductTests
         };
         Assert.Contains("DDR5-6000", RamTimingGuidance.FormatPrimaryLine(p));
         Assert.Contains("EXPO", RamTimingGuidance.Guidance(p), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("EXPO-first", RamTimingGuidance.Guidance(p), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("ZenTimings", RamTimingGuidance.Guidance(), StringComparison.OrdinalIgnoreCase);
         var warns = RamTimingGuidance.SoftWarnings(p);
         Assert.Contains(warns, w => w.Contains("tRAS", StringComparison.OrdinalIgnoreCase));

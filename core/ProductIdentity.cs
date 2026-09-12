@@ -46,6 +46,8 @@ public static class ProductIdentity
         return
             $"{Name} {Version}\n{Tagline}\n\n{Copyright}\n{NotAffiliated}\n\n" +
             "GPU: AMD ADLX (Adrenalin).\nCPU/BIOS/RAM mailbox: AMD Ryzen Master Platform/Device.\n" +
+            "Curve Shaper: gated on a real RM C export (otherwise UI disabled).\n" +
+            $"Metrics JSON: {MetricsSnapshotExport.DefaultPath}\n" +
             "No WinRing0. No Intel/NVIDIA hardware control in this release.\n\n" +
             ShortDisclaimer;
     }

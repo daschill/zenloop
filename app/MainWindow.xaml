@@ -247,9 +247,18 @@
                                            Text="Negative = undervolt. Auto-tune searches each logical core from per-core stability."/>
                                 <StackPanel x:Name="CorePanel"/>
 
+                                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="Curve Shaper (Ryzen 9000)"/>
+                                <TextBlock x:Name="TxtCurveShaper" Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                           Text="Curve Shaper: probing…"/>
+                                <Button x:Name="BtnCurveShaperApply" Content="Apply Curve Shaper" Margin="0,0,0,4"
+                                        IsEnabled="False" Opacity="0.55" Click="OnCurveShaperApply"
+                                        ToolTip="Requires a real AMD Curve Shaper C export. Disabled when Platform/Device lack the API."/>
+
                                 <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="RAM timings (BIOS)"/>
                                 <TextBlock Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
-                                           Text="DDR5 via AMD BIOS mailbox (same as Ryzen Master). Write RAM BIOS then reboot. EXPO off for manual primaries."/>
+                                           Text="DDR5 via AMD BIOS mailbox (same as Ryzen Master). EXPO first, then tighten one primary at a time. Write RAM BIOS then reboot. Not a fake DDR5 calculator."/>
+                                <TextBlock x:Name="TxtRamPrimaries" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="Primaries: read RAM to load live CL-tRCD-tRP-tRAS / tRFC / FCLK"/>
                                 <CheckBox x:Name="ChkExpo" Content="EXPO profile" Margin="0,0,0,8"/>
                                 <Grid Margin="0,4,0,4">
                                     <TextBlock Style="{StaticResource Label}" Text="MEM CLOCK"/>

@@ -8,6 +8,12 @@ Download, double-click `ZenLoop.exe`, approve Administrator once, accept the fir
 
 Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON backup (Adrenalin/RM-style). Intel CPUs and NVIDIA GPUs are unsupported for hardware control — the UI says so honestly.
 
+**Curve Shaper** (Ryzen 9000) is capability-gated: ZenLoop probes Platform/Device for a real C export; if absent, the UI stays disabled with an honest reason (no invented bands).
+
+**RAM guidance** shows primaries + FCLK/MCLK when readable, EXPO-first steps, and soft warnings — not a fake DDR5 calculator.
+
+**Metrics JSON** for RTSS/HWiNFO users: `%LocalAppData%\ZenLoop\zenloop-metrics.json` (see `docs/METRICS-EXPORT.md`). Not an in-app OSD.
+
 ## Requirements (Windows AMD PC)
 
 ZenLoop does **not** run on Linux. On the target PC you need:

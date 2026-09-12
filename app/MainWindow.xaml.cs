@@ -204,12 +204,23 @@ public partial class MainWindow : Window
         SldBoost.Opacity = caps.BoostOverride ? 1.0 : 0.55;
         if (!caps.BoostOverride)
             LblBoost.Text = $"+{(int)SldBoost.Value} MHz (not applied)";
+        if (TxtCurveShaper is not null)
+            TxtCurveShaper.Text = caps.CurveShaper
+                ? "Curve Shaper: available (RM C export probed)."
+                : caps.CurveShaperReason;
+        if (BtnCurveShaperApply is not null)
+        {
+            BtnCurveShaperApply.IsEnabled = caps.CurveShaper;
+            BtnCurveShaperApply.Opacity = caps.CurveShaper ? 1.0 : 0.55;
+        }
         if (!caps.HelperAvailable && !string.IsNullOrEmpty(caps.Error))
             Log("Control: " + caps.Error);
         else if (!caps.BiosPbo)
             Log("BIOS persist unavailable (CDefaultBIOS not bound). Session SMU only until reboot.");
         if (!caps.BoostOverride)
             Log(BiosWriteGuard.BoostUnavailableNote);
+        if (!caps.CurveShaper)
+            Log(CurveShaperSupport.UnavailableShort);
     }
 
     static string SmuStatusLine(string json)
@@ -276,6 +287,8 @@ public partial class MainWindow : Window
             TxtFooter.Text = ex.Message;
         }
     }
+
+    // (metrics snapshot is written after Optimize and from About — not every poll)
 
     async Task RefreshInfoAsync()
     {
@@ -475,6 +488,32 @@ public partial class MainWindow : Window
         SldTrfc.Value = p.Trfc;
         ChkExpo.IsChecked = p.Expo;
         OnRamSlider(this, new RoutedPropertyChangedEventArgs<double>(0, 0));
+        if (TxtRamPrimaries is not null)
+            TxtRamPrimaries.Text = RamTimingGuidance.FormatPrimaryLine(p);
+    }
+
+    async void OnCurveShaperApply(object sender, RoutedEventArgs e)
+    {
+        if (_caps is null || !_caps.CurveShaper)
+        {
+            MessageBox.Show(this, CurveShaperSupport.UnavailableReason, "Curve Shaper",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!EnsureEulaAccepted()) return;
+        if (_smu is null) return;
+        if (!ConfirmDangerousWrite(BiosWriteGuard.SessionWarning, "Apply Curve Shaper", requireAdmin: true))
+            return;
+        await RunExclusive("Applying Curve Shaper…", async ct =>
+        {
+            var surface = _smu.ControlSurface();
+            var profile = new CurveShaperProfile { Enabled = true };
+            var caps = _caps;
+            var r = await Task.Run(() => surface.ApplyCurveShaper(profile, caps), ct);
+            Log($"Curve Shaper apply session={r.SessionApplied} {(r.Error ?? "ok")}");
+            if (!string.IsNullOrEmpty(r.Error))
+                throw new HwException(r.Error);
+        });
     }
 
     async void OnRamRead(object sender, RoutedEventArgs e)
@@ -626,8 +665,10 @@ public partial class MainWindow : Window
         var extra = _settings.HasAcceptedCurrentEula
             ? $"\n\nEULA v{ProductIdentity.EulaVersion}: accepted."
             : $"\n\nEULA v{ProductIdentity.EulaVersion}: not accepted yet.";
+        WriteMetricsSnapshot("telemetry");
         var choice = MessageBox.Show(this,
-            ProductIdentity.AboutText() + extra + "\n\nYes = re-open EULA accept  ·  No = close",
+            ProductIdentity.AboutText() + extra + "\n\n" + MetricsSnapshotExport.PathHelp
+            + "\n\nYes = re-open EULA accept  ·  No = close",
             "About ZenLoop",
             MessageBoxButton.YesNo, MessageBoxImage.Information);
         if (choice == MessageBoxResult.Yes)
@@ -933,9 +974,25 @@ public partial class MainWindow : Window
             }
             else
                 Log("Optimize finished but a baseline or current bench is missing.");
+            WriteMetricsSnapshot("optimize", goal, delta?.Summary, pass: delta is not null);
         }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
         TryLoadCpuProfileIntoUi();
+    }
+
+    void WriteMetricsSnapshot(string source, string? goal = null, string? summary = null, bool? pass = null)
+    {
+        try
+        {
+            var metrics = _last?.Metrics ?? new Dictionary<string, double?>();
+            var snap = MetricsSnapshotExport.FromMetrics(metrics, source, goal, summary, pass);
+            var path = MetricsSnapshotExport.Write(snap);
+            Log($"Metrics snapshot → {path}");
+        }
+        catch (Exception ex)
+        {
+            Log("Metrics export skipped: " + ex.Message);
+        }
     }
 
     async void OnAutoGpu(object sender, RoutedEventArgs e)

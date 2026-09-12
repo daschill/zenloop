@@ -616,7 +616,28 @@ static void EmitCores(Json& j, const std::vector<short>& co) {
     j.endArr();
 }
 
-static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, bool drvOk, bool supported) {
+static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, bool drvOk, bool supported,
+                             HMODULE platform, HMODULE device) {
+    bool curveShaper = false;
+    std::string csFound;
+    static const char* kCsNames[] = {
+        "GetCurveShaper", "SetCurveShaper",
+        "GetCurveShaperParameters", "SetCurveShaperParameters",
+        "EnableCurveShaper", "DisableCurveShaper",
+        "GetCSParameters", "SetCSParameters",
+        "GetCurveShaperStatus", "SetCurveShaperStatus",
+        "GetCurveShaperBands", "SetCurveShaperBands",
+        nullptr
+    };
+    for (int i = 0; kCsNames[i]; i++) {
+        if ((platform && GetProcAddress(platform, kCsNames[i])) ||
+            (device && GetProcAddress(device, kCsNames[i]))) {
+            curveShaper = true;
+            csFound = kCsNames[i];
+            break;
+        }
+    }
+
     j.key("capabilities");
     Json c;
     c.beginObj();
@@ -625,6 +646,7 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
     c.boolean("bios_pbo", biosBound);
     c.boolean("bios_co", biosBound);
     c.boolean("bios_ram", biosBound);
+    c.boolean("curve_shaper", curveShaper);
     c.boolean("boost_override", false);
     c.boolean("manual_all_core_oc", false);
     c.boolean("gpu_bios_persist", false);
@@ -632,6 +654,13 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
     c.boolean("bios_restore_full_uefi", false);
     c.boolean("requires_reboot_after_bios", true);
     c.boolean("supported_processor", supported);
+    if (curveShaper) {
+        c.str("curve_shaper_note",
+              std::string("Curve Shaper C export found: ") + csFound);
+    } else {
+        c.str("curve_shaper_note",
+              "no Platform.dll/Device.dll Curve Shaper C export (Ryzen Master GUI-only on Ryzen 9000; ZenLoop will not invent bands)");
+    }
     c.str("boost_override_note",
           "no Platform.dll C export for PBO boost override (GetCurrentFMaxCPU is read-only)");
     c.str("manual_all_core_oc_note",
@@ -718,7 +747,8 @@ int main(int argc, char** argv) {
         j.str("bios_rtti", devs.biosName);
         j.boolean("co_bind", devs.cpu != nullptr);
         j.boolean("bios_bind", devs.bios != nullptr);
-        EmitCapabilities(j, rmOk, devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0);
+        EmitCapabilities(j, rmOk, devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0,
+                         api.platform, api.device);
         if (cmd != "caps" && rmOk) {
             j.boolean("pbo_enabled", true);
             j.numi("ppt_watts", parsed.ppt);
@@ -773,6 +803,9 @@ int main(int argc, char** argv) {
             GetBiosInt(devs.bios, kBiosGetTrp, &trp);
             GetBiosInt(devs.bios, kBiosGetTras, &tras);
             GetBiosInt(devs.bios, kBiosGetTrfc, &trfc);
+            // FCLK from GetRmCpuParameters layout (RmFullStats.FclkP0 @ offset 68). Never invent UCLK.
+            float fclk = F32(rm, 68);
+            bool fclkOk = FiniteF(fclk) && fclk >= 800.f && fclk <= 2200.f;
             Json ram;
             ram.beginObj();
             ram.numi("mem_clock_mhz", clk);
@@ -783,6 +816,8 @@ int main(int argc, char** argv) {
             ram.numi("tras", tras);
             ram.numi("trfc", trfc);
             ram.boolean("expo", false);
+            if (clk > 0) ram.numi("mclk_mhz", clk);
+            if (fclkOk) ram.numi("fclk_mhz", static_cast<long long>(fclk + 0.5f));
             ram.endObj();
             Json j;
             j.beginObj();
@@ -988,7 +1023,8 @@ int main(int argc, char** argv) {
     j.str("bios_rtti", devs.biosName);
     j.boolean("co_bind", devs.cpu != nullptr);
     j.boolean("bios_bind", devs.bios != nullptr);
-    EmitCapabilities(j, session || !BufferEmpty(rm), devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0);
+    EmitCapabilities(j, session || !BufferEmpty(rm), devs.cpu != nullptr, devs.bios != nullptr, drvOk, supported != 0,
+                     api.platform, api.device);
     j.boolean("pbo_enabled", pbo);
     j.numi("ppt_watts", ppt);
     j.numi("tdc_amps", tdc);
