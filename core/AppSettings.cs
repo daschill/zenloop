@@ -13,6 +13,12 @@ public sealed class AppSettings
 
     public bool HasAcceptedCurrentEula => AcceptedEulaVersion >= ProductIdentity.EulaVersion;
 
+    /// <summary>
+    /// Version manifest URL for About → update check. Empty/null uses
+    /// <see cref="UpdateChecker.DefaultManifestUrl"/> (GitHub Releases <c>version.json</c>).
+    /// </summary>
+    public string? UpdateManifestUrl { get; set; }
+
     static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,

@@ -1,0 +1,5 @@
+{
+  "version": "1.2.0",
+  "url": "https://github.com/daschill/zenloop/releases/latest",
+  "notes": "Placeholder for the documented raw-JSON path. Prefer attaching version.json to each GitHub Release so DefaultManifestUrl resolves."
+}

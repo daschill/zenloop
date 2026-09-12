@@ -13,6 +13,8 @@ public class CommercialProductTests
         Assert.Contains("AS IS", ProductIdentity.EulaSummary, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("own risk", ProductIdentity.ShortDisclaimer, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("not affiliated", ProductIdentity.NotAffiliated, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CLR_CMOS", ProductIdentity.RecoverySummary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Adrenalin", ProductIdentity.AboutText(), StringComparison.OrdinalIgnoreCase);
         Assert.False(string.IsNullOrWhiteSpace(ProductIdentity.Version));
         Assert.StartsWith("ZenLoop", ProductIdentity.WindowTitle);
     }
