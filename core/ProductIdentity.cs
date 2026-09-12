@@ -49,6 +49,7 @@ public static class ProductIdentity
             "Curve Shaper: exhaustive Platform/Device probe; gated without invented bands (PBO/CO alternative).\n" +
             "DRAM lab: ZenTimings-class read/guidance + export (no fake DDR5 tables, no WinRing0).\n" +
             $"Metrics JSON: {MetricsSnapshotExport.DefaultPath}\n" +
+            $"RTSS OSD: slot owner {RtssOsdBridge.OwnerId}; MMF {RtssOsdBridge.ZenLoopMapName}; text {RtssOsdBridge.DefaultOsdTextPath}\n" +
             "No WinRing0. No Intel/NVIDIA hardware control in this release.\n\n" +
             ShortDisclaimer + "\n\n" +
             RecoverySummary;

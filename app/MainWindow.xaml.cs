@@ -867,6 +867,7 @@ public partial class MainWindow : Window
         var choice = MessageBox.Show(this,
             ProductIdentity.AboutText() + extra + updateLine + recoveryHint +
             "\n\n" + MetricsSnapshotExport.PathHelp +
+            "\n\n" + RtssOsdBridge.InstallHelp +
             "\n\nYes = re-open EULA accept  ·  No = open recovery guide  ·  Cancel = close",
             "About ZenLoop",
             MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
@@ -1316,6 +1317,18 @@ public partial class MainWindow : Window
             }
             var path = MetricsSnapshotExport.Write(snap, atomic: true);
             Log($"Metrics snapshot → {path}");
+            try
+            {
+                var osd = RtssOsdBridge.Publish(snap);
+                if (osd.Any)
+                    Log($"RTSS OSD → {osd.Describe()}");
+                else
+                    Log("RTSS OSD: no channel yet (JSON kept; start RTSS for in-game slot).");
+            }
+            catch (Exception osdEx)
+            {
+                Log("RTSS OSD publish skipped: " + osdEx.Message);
+            }
         }
         catch (Exception ex)
         {
@@ -1382,6 +1395,129 @@ public partial class MainWindow : Window
             await Dispatcher.InvokeAsync(() => ApplyMetrics(snap));
             Log("AMD auto-undervolt finished.");
         });
+        await RefreshInfoAsync();
+    }
+
+    async void OnUvBakeOff(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null || _hw is null) return;
+        var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
+        var secs = Math.Max(10, (int)SldSeconds.Value);
+
+        var includeAdrenalin = MessageBox.Show(this,
+                "UV bake-off on this PC:\n"
+                + "1. Stock (Adrenalin Default) + bench\n"
+                + "2. ZenLoop UV (saved GPU profile or AMD auto-UV) + bench\n"
+                + "3. Optional: import an Adrenalin/ZenLoop GPU profile JSON and bench\n\n"
+                + "Writes %LocalAppData%\\ZenLoop\\bakeoff\\ report (JSON + Markdown).\n"
+                + "Close games first. Continue?\n\n"
+                + "Yes = include optional Adrenalin profile file picker\n"
+                + "No = stock vs ZenLoop only\n"
+                + "Cancel = abort",
+                "UV bake-off",
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        if (includeAdrenalin == MessageBoxResult.Cancel) return;
+
+        string? adrProfilePath = null;
+        GpuProfile? adrProfile = null;
+        if (includeAdrenalin == MessageBoxResult.Yes)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Adrenalin / ZenLoop GPU profile (JSON or XML)",
+                Filter = "Profiles (*.json;*.xml)|*.json;*.xml|All files|*.*",
+                CheckFileExists = true,
+            };
+            if (dlg.ShowDialog(this) == true)
+            {
+                adrProfilePath = dlg.FileName;
+                adrProfile = AdrenalinUvBakeOff.TryImportAdrenalinProfile(adrProfilePath);
+                if (adrProfile is null)
+                {
+                    MessageBox.Show(this,
+                        "Could not map voltage/clock fields from that file. Continuing with stock vs ZenLoop only.",
+                        "UV bake-off", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+        }
+
+        await RunExclusive("UV bake-off…", async ct =>
+        {
+            var legs = new List<BakeOffLegInput>();
+            var progress = new Progress<TuneProgress>(p =>
+            {
+                Bar.Value = Math.Max(Bar.Value, p.Fraction);
+                TxtStep.Text = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
+                Log(p.Message);
+            });
+
+            Log("Bake-off: restoring stock GPU…");
+            await Task.Run(() => _hw.Reset(), ct);
+            var stockBench = await _tune.RunSystemBenchAsync("bakeoff-stock", secs, new Limits(), progress, ct);
+            legs.Add(new BakeOffLegInput
+            {
+                Kind = nameof(BakeOffLegKind.Stock),
+                Label = "Stock (Adrenalin Default)",
+                Bench = stockBench,
+            });
+
+            var zenProfile = _tune.LoadStartupProfile();
+            if (zenProfile is null)
+            {
+                Log("No saved ZenLoop GPU profile — running AMD auto-undervolt for the ZenLoop leg…");
+                await Task.Run(() => _hw.AmdAuto("undervolt"), ct);
+                zenProfile = await Task.Run(() => _hw.ExportProfile(), ct);
+            }
+            else
+            {
+                Log($"Applying ZenLoop GPU profile {zenProfile.VoltageMv} mV @ {zenProfile.MaxMhz} MHz…");
+                await Task.Run(() => _hw.ApplyProfile(zenProfile), ct);
+            }
+            var zenBench = await _tune.RunSystemBenchAsync("bakeoff-zenloop", secs, new Limits(), progress, ct);
+            legs.Add(new BakeOffLegInput
+            {
+                Kind = nameof(BakeOffLegKind.ZenLoopUv),
+                Label = "ZenLoop UV",
+                Bench = zenBench,
+                Profile = zenProfile,
+            });
+
+            if (adrProfile is not null)
+            {
+                Log($"Applying imported Adrenalin profile {adrProfile.VoltageMv} mV @ {adrProfile.MaxMhz} MHz…");
+                await Task.Run(() => _hw.ApplyProfile(adrProfile), ct);
+                var adrBench = await _tune.RunSystemBenchAsync("bakeoff-adrenalin", secs, new Limits(), progress, ct);
+                legs.Add(new BakeOffLegInput
+                {
+                    Kind = nameof(BakeOffLegKind.AdrenalinProfile),
+                    Label = "Adrenalin profile",
+                    Bench = adrBench,
+                    Profile = adrProfile,
+                    Notes = adrProfilePath,
+                });
+            }
+
+            // Leave the machine on the ZenLoop profile when we have one.
+            if (zenProfile is not null)
+            {
+                Log("Re-applying ZenLoop GPU profile after bake-off…");
+                await Task.Run(() => _hw.ApplyProfile(zenProfile), ct);
+            }
+
+            var report = AdrenalinUvBakeOff.Build(legs, goal: goal);
+            var path = AdrenalinUvBakeOff.Write(report);
+            var md = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path)!, AdrenalinUvBakeOff.MarkdownFileName);
+            Log($"Bake-off report → {path}");
+            Log($"Bake-off markdown → {md}");
+            if (report.ZenLoopVsStock is not null)
+                Log("ZenLoop vs stock: " + report.ZenLoopVsStock.Summary);
+            if (report.ZenLoopVsAdrenalin is not null)
+                Log("ZenLoop vs Adrenalin: " + report.ZenLoopVsAdrenalin.Summary);
+            TxtStep.Text = report.WinnerByScore is null
+                ? "UV bake-off done"
+                : $"Bake-off winner: {report.WinnerByScore}";
+            TxtBench.Text = AdrenalinUvBakeOff.ToMarkdown(report);
+        }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
     }
 
