@@ -122,6 +122,10 @@ public static class UpdateChecker
         return Evaluate(localVersion, manifest);
     }
 
+    /// <summary>True when settings opt into the silent App-startup update check (default off).</summary>
+    public static bool IsStartupCheckEnabled(AppSettings? settings)
+        => settings is not null && settings.CheckForUpdatesOnStartup;
+
     /// <summary>Fetch manifest JSON and compare. Failures are soft (never throw for network).</summary>
     public static async Task<Result> CheckAsync(
         string localVersion,

@@ -19,6 +19,12 @@ public sealed class AppSettings
     /// </summary>
     public string? UpdateManifestUrl { get; set; }
 
+    /// <summary>
+    /// When true, run a silent update check shortly after startup (tray/log only; no modal).
+    /// Default off so depth/About UI is not disturbed.
+    /// </summary>
+    public bool CheckForUpdatesOnStartup { get; set; }
+
     static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,

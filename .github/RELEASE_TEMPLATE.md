@@ -22,7 +22,7 @@ Builds are **not** EV code-signed. Windows SmartScreen may warn on first run.
 
 ## Update check
 
-Ship this Release asset as `version.json`:
+Ship this Release asset as `version.json` (start from `docs/version.example.json`):
 
 ```json
 {
@@ -35,7 +35,10 @@ Ship this Release asset as `version.json`:
 Clients default to:
 `https://github.com/daschill/zenloop/releases/latest/download/version.json`
 
-Override via `app-settings.json` → `UpdateManifestUrl`.
+(`UpdateChecker.DefaultManifestUrl` in `core/UpdateChecker.cs`.)
+
+Override via `app-settings.json` → `UpdateManifestUrl`. Optional silent startup check:
+`CheckForUpdatesOnStartup: true` (default false).
 
 ## Recovery
 

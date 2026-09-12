@@ -49,7 +49,19 @@ The About dialog fetches a small JSON manifest and compares SemVer to the runnin
 
 **Documented raw fallback:** `https://raw.githubusercontent.com/daschill/zenloop/main/docs/version.json`
 
-Override in `%LocalAppData%\ZenLoop\profiles\app-settings.json`:
+Optional **silent startup check** (default **off**): set in the Optimize panel checkbox
+“Check for updates on startup (silent)”, or in `%LocalAppData%\ZenLoop\profiles\app-settings.json`:
+
+```json
+{
+  "CheckForUpdatesOnStartup": true,
+  "UpdateManifestUrl": "https://example.com/zenloop-version.json"
+}
+```
+
+When enabled, App startup fetches the manifest after idle and shows a **tray balloon + log line** only if an update is available (no modal MessageBox).
+
+Override manifest URL alone:
 
 ```json
 {
@@ -67,7 +79,9 @@ Manifest shape (see [`docs/version.example.json`](./version.example.json)):
 }
 ```
 
-Attach `version.json` as a **GitHub Release asset** on every release (template: [`.github/RELEASE_TEMPLATE.md`](../.github/RELEASE_TEMPLATE.md)). The client only shows “update available” — no license or payment gates.
+Attach `version.json` as a **GitHub Release asset** on every release (template: [`.github/RELEASE_TEMPLATE.md`](../.github/RELEASE_TEMPLATE.md)). Copy from `docs/version.example.json` and bump `version` / `url` / `notes`. The client only shows “update available” — no license or payment gates.
+
+MSIX logos live in [`scripts/msix-assets/`](../scripts/msix-assets/) (branded placeholders; regenerate via `scripts/generate-msix-assets.py`).
 
 ## 5. Recovery docs
 

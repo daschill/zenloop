@@ -102,10 +102,19 @@ if ($Msix) {
 
     $assets = Join-Path $stage "Assets"
     New-Item -ItemType Directory -Force -Path $assets | Out-Null
-    # Minimal 1x1 PNG placeholders so MakeAppx accepts the layout when real art is absent.
-    $pngBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
-    foreach ($name in @("StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png", "Wide310x150Logo.png")) {
-        [IO.File]::WriteAllBytes((Join-Path $assets $name), $pngBytes)
+    $assetSrc = Join-Path $Root "scripts\msix-assets"
+    $names = @("StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png", "Wide310x150Logo.png")
+    foreach ($name in $names) {
+        $src = Join-Path $assetSrc $name
+        $dst = Join-Path $assets $name
+        if (Test-Path $src) {
+            Copy-Item $src $dst -Force
+        }
+        else {
+            Write-Warning "Missing branded asset $src — writing minimal 1x1 PNG fallback."
+            $pngBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+            [IO.File]::WriteAllBytes($dst, $pngBytes)
+        }
     }
 
     $manifestSrc = Join-Path $Root "scripts\AppxManifest.xml"

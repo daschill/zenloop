@@ -146,6 +146,7 @@ public partial class MainWindow : Window
         ChkApplyOnStart.IsChecked = _settings.ApplyProfilesOnStart;
         ChkStartWithWindows.IsChecked = _settings.StartWithWindows;
         ChkTray.IsChecked = _settings.MinimizeToTray;
+        ChkStartupUpdateCheck.IsChecked = _settings.CheckForUpdatesOnStartup;
     }
 
     void OnSettingsChanged(object sender, RoutedEventArgs e)
@@ -153,9 +154,20 @@ public partial class MainWindow : Window
         _settings.ApplyProfilesOnStart = ChkApplyOnStart.IsChecked == true;
         _settings.StartWithWindows = ChkStartWithWindows.IsChecked == true;
         _settings.MinimizeToTray = ChkTray.IsChecked == true;
+        _settings.CheckForUpdatesOnStartup = ChkStartupUpdateCheck.IsChecked == true;
         _tune?.SaveSettings(_settings);
         try { WindowsStartup.SetEnabled(_settings.StartWithWindows); }
         catch (Exception ex) { Log("Start with Windows: " + ex.Message); }
+    }
+
+    /// <summary>Called from App startup when optional silent update check finds a newer version.</summary>
+    public void NotifySilentUpdateAvailable(UpdateChecker.Result result)
+    {
+        if (!result.UpdateAvailable) return;
+        var text = StartupUpdateCheck.FormatTrayText(result);
+        Log(text);
+        TxtFooter.Text = text.Length > 120 ? text[..120] + "…" : text;
+        _tray?.ShowBalloon(StartupUpdateCheck.TrayTitle, text);
     }
 
     async Task RefreshSmuAsync()

@@ -109,4 +109,53 @@ public class UpdateCheckerTests
             try { Directory.Delete(dir, true); } catch { /* ignore */ }
         }
     }
+
+    [Fact]
+    public void AppSettings_startup_update_check_defaults_off_and_round_trips()
+    {
+        var fresh = new AppSettings();
+        Assert.False(fresh.CheckForUpdatesOnStartup);
+
+        var dir = Path.Combine(Path.GetTempPath(), "zenloop-upd-toggle-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "app-settings.json");
+        try
+        {
+            var s = new AppSettings { CheckForUpdatesOnStartup = true };
+            s.Save(path);
+            var loaded = AppSettings.Load(path);
+            Assert.True(loaded.CheckForUpdatesOnStartup);
+
+            // Explicit false persists.
+            loaded.CheckForUpdatesOnStartup = false;
+            loaded.Save(path);
+            Assert.False(AppSettings.Load(path).CheckForUpdatesOnStartup);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void Startup_gate_follows_CheckForUpdatesOnStartup_toggle()
+    {
+        Assert.False(UpdateChecker.IsStartupCheckEnabled(null));
+        Assert.False(UpdateChecker.IsStartupCheckEnabled(new AppSettings()));
+        Assert.False(UpdateChecker.IsStartupCheckEnabled(new AppSettings { CheckForUpdatesOnStartup = false }));
+        Assert.True(UpdateChecker.IsStartupCheckEnabled(new AppSettings { CheckForUpdatesOnStartup = true }));
+    }
+
+    [Fact]
+    public void Format_silent_update_message_includes_versions()
+    {
+        var available = UpdateChecker.Evaluate("1.1.0",
+            new UpdateChecker.Manifest("1.2.0", "https://example.com/r", "n"));
+        Assert.True(available.UpdateAvailable);
+        Assert.Contains("1.2.0", available.Message, StringComparison.Ordinal);
+        Assert.Contains("1.1.0", available.Message, StringComparison.Ordinal);
+
+        var same = UpdateChecker.Evaluate("1.2.0", new UpdateChecker.Manifest("1.2.0"));
+        Assert.False(same.UpdateAvailable);
+    }
 }
