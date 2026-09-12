@@ -68,5 +68,33 @@ public static class CurveShaperSupport
         "Curve Shaper: unavailable (no RM C API — use Ryzen Master GUI on Ryzen 9000)";
 
     public const string BiosNote =
-        "When AMD adds a signed Curve Shaper C export, ZenLoop will probe it and enable read/write + profile-pack support.";
+        "When AMD adds a signed Curve Shaper C export with a published C ABI, ZenLoop will probe it and enable "
+        + "read/write + profile-pack support under BiosWriteGuard confirms.";
+
+    public const string SignatureUnknownNote =
+        "A Curve Shaper-related export was found, but AMD has not published a C calling convention. "
+        + "ZenLoop refuses to call unknown ABIs (no invented band writes).";
+
+    /// <summary>Named C exports probed by zenloop-cpu (plus PE export-table substring scan).</summary>
+    public static IReadOnlyList<string> ProbedExportNames { get; } =
+    [
+        "GetCurveShaper", "SetCurveShaper",
+        "GetCurveShaperParameters", "SetCurveShaperParameters",
+        "EnableCurveShaper", "DisableCurveShaper",
+        "GetCSParameters", "SetCSParameters",
+        "GetCurveShaperStatus", "SetCurveShaperStatus",
+        "GetCurveShaperBands", "SetCurveShaperBands",
+        "ReadCurveShaper", "WriteCurveShaper",
+        "GetCurveShaperOffset", "SetCurveShaperOffset",
+        "ApplyCurveShaper", "QueryCurveShaper",
+    ];
+
+    /// <summary>True when capability JSON / probe note indicates a real matched export.</summary>
+    public static bool LooksLikeExportFound(string? note)
+    {
+        if (string.IsNullOrWhiteSpace(note)) return false;
+        return note.Contains("export found", StringComparison.OrdinalIgnoreCase)
+               || note.Contains("C export found", StringComparison.OrdinalIgnoreCase)
+               || note.Contains("matched:", StringComparison.OrdinalIgnoreCase);
+    }
 }

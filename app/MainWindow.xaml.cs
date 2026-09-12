@@ -240,18 +240,26 @@ public partial class MainWindow : Window
         BtnPboStockBios.IsEnabled = caps.BiosStockWrite;
         BtnRamWrite.IsEnabled = caps.BiosRam;
         BtnRamRead.IsEnabled = caps.BiosRam;
+        if (BtnRamExport is not null)
+            BtnRamExport.IsEnabled = true;
         SldBoost.IsEnabled = caps.BoostOverride;
         SldBoost.Opacity = caps.BoostOverride ? 1.0 : 0.55;
         if (!caps.BoostOverride)
             LblBoost.Text = $"+{(int)SldBoost.Value} MHz (not applied)";
         if (TxtCurveShaper is not null)
             TxtCurveShaper.Text = caps.CurveShaper
-                ? "Curve Shaper: available (RM C export probed)."
+                ? "Curve Shaper: export probed — apply still requires a published C ABI (BiosWriteGuard)."
                 : caps.CurveShaperReason;
         if (BtnCurveShaperApply is not null)
         {
             BtnCurveShaperApply.IsEnabled = caps.CurveShaper;
             BtnCurveShaperApply.Opacity = caps.CurveShaper ? 1.0 : 0.55;
+        }
+        if (TxtCurveShaperAlt is not null)
+        {
+            TxtCurveShaperAlt.Text = caps.CurveShaper
+                ? CurveShaperSupport.BiosNote
+                : CurveShaperAlternative.Guidance(_tune?.LoadCpuPboProfile());
         }
         if (!caps.HelperAvailable && !string.IsNullOrEmpty(caps.Error))
             Log("Control: " + caps.Error);
@@ -260,7 +268,7 @@ public partial class MainWindow : Window
         if (!caps.BoostOverride)
             Log(BiosWriteGuard.BoostUnavailableNote);
         if (!caps.CurveShaper)
-            Log(CurveShaperSupport.UnavailableShort);
+            Log(CurveShaperSupport.UnavailableShort + " — " + CurveShaperAlternative.UiHint());
     }
 
     static string SmuStatusLine(string json)
@@ -597,20 +605,33 @@ public partial class MainWindow : Window
         ChkExpo.IsChecked = p.Expo;
         OnRamSlider(this, new RoutedPropertyChangedEventArgs<double>(0, 0));
         if (TxtRamPrimaries is not null)
-            TxtRamPrimaries.Text = RamTimingGuidance.FormatPrimaryLine(p);
+            TxtRamPrimaries.Text = "Primaries: " + RamTimingGuidance.FormatPrimaryLine(p);
+        if (TxtRamSecondaries is not null)
+            TxtRamSecondaries.Text = RamTimingGuidance.FormatSecondaryLine(p);
+        if (TxtRamFabric is not null)
+        {
+            var clocks = RamTimingGuidance.FormatFabricClocks(p);
+            TxtRamFabric.Text = string.IsNullOrEmpty(clocks)
+                ? "FCLK / UCLK / MCLK: unread"
+                : clocks;
+        }
+        if (TxtRamStress is not null)
+            TxtRamStress.Text = "Stress: " + string.Join(" ", RamTimingGuidance.StressAdvice().Take(2));
     }
 
     async void OnCurveShaperApply(object sender, RoutedEventArgs e)
     {
         if (_caps is null || !_caps.CurveShaper)
         {
-            MessageBox.Show(this, CurveShaperSupport.UnavailableReason, "Curve Shaper",
+            MessageBox.Show(this,
+                CurveShaperSupport.UnavailableReason + "\n\n" + CurveShaperAlternative.Guidance(_tune?.LoadCpuPboProfile()),
+                "Curve Shaper",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (!EnsureEulaAccepted()) return;
         if (_smu is null) return;
-        if (!ConfirmDangerousWrite(BiosWriteGuard.SessionWarning, "Apply Curve Shaper", requireAdmin: true))
+        if (!ConfirmDangerousWrite(BiosWriteGuard.CurveShaperWarning, "Apply Curve Shaper", requireAdmin: true))
             return;
         await RunExclusive("Applying Curve Shaper…", async ct =>
         {
@@ -629,21 +650,69 @@ public partial class MainWindow : Window
         if (_smu is null) return;
         await RunExclusive("Reading RAM timings from AMD BIOS…", async ct =>
         {
-            var p = await Task.Run(() => _smu.ReadRam(), ct);
+            var p = await Task.Run(() =>
+            {
+                var ram = _smu.ReadRam();
+                if (ram is null) return null;
+                RamTimingGuidance.MergeFabric(ram, HwinfoSensors.TryReadFabricClocks());
+                return ram;
+            }, ct);
             if (p is null)
             {
                 Log("RAM read failed. Run as Administrator so CDefaultBIOS can bind.");
                 return;
             }
+            _tune?.SaveRamProfile(p);
             await Dispatcher.InvokeAsync(() =>
             {
                 LoadRamToUi(p);
                 TxtRamGuidance.Text = RamTimingGuidance.Guidance(p);
             });
             Log(RamTimingGuidance.FormatPrimaryLine(p));
+            Log(RamTimingGuidance.FormatSecondaryLine(p));
             foreach (var w in RamTimingGuidance.SoftWarnings(p))
                 Log("RAM note: " + w);
         });
+    }
+
+    void OnRamExport(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var profile = UiRamProfile();
+            // Preserve last-read fabric/secondaries when UI sliders only cover primaries.
+            var loaded = _tune?.LoadRamProfile();
+            if (loaded is not null)
+            {
+                profile.FclkMhz ??= loaded.FclkMhz;
+                profile.UclkMhz ??= loaded.UclkMhz;
+                profile.MclkMhz ??= loaded.MclkMhz;
+                if (!profile.HasAnySecondary && loaded.HasAnySecondary)
+                {
+                    profile.Trc = loaded.Trc;
+                    profile.Tfaw = loaded.Tfaw;
+                    profile.TrrdS = loaded.TrrdS;
+                    profile.TrrdL = loaded.TrrdL;
+                    profile.TwtrS = loaded.TwtrS;
+                    profile.TwtrL = loaded.TwtrL;
+                    profile.Tcwl = loaded.Tcwl;
+                    profile.Twr = loaded.Twr;
+                    profile.TrdrdScl = loaded.TrdrdScl;
+                    profile.TwrwrScl = loaded.TwrwrScl;
+                }
+            }
+            _tune?.SaveRamProfile(profile);
+            var report = DramLabExport.FromProfile(profile, source: "ui-export");
+            var path = DramLabExport.Write(report, atomic: true);
+            Log("DRAM lab export → " + path);
+            MessageBox.Show(this,
+                "Exported DRAM lab snapshot:\n" + path + "\n\n" + report.PrimaryLine + "\n" + RamTimingGuidance.FormatSecondaryLine(profile),
+                "Export DRAM lab", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     async void OnRamWrite(object sender, RoutedEventArgs e)
@@ -1758,6 +1827,8 @@ public partial class MainWindow : Window
                 BtnRamRead.IsEnabled = !busy;
                 BtnRamWrite.IsEnabled = !busy;
             }
+            if (BtnRamExport is not null)
+                BtnRamExport.IsEnabled = !busy;
         }
         BtnStop.IsEnabled = busy;
         SldClock.IsEnabled = !busy;

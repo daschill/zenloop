@@ -36,6 +36,7 @@ public class CurveDramMetricsTests
         var on = WindowsControlSurface.FromCpuInfoJson(yes);
         Assert.True(on.CurveShaper);
         Assert.Contains("GetCurveShaper", on.CurveShaperReason);
+        Assert.True(CurveShaperSupport.LooksLikeExportFound(on.CurveShaperReason));
     }
 
     [Fact]
@@ -46,6 +47,7 @@ public class CurveDramMetricsTests
         Assert.False(r.SessionApplied);
         Assert.False(r.BiosPersisted);
         Assert.Contains("Curve Shaper", r.Error!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PBO", r.Note!, StringComparison.OrdinalIgnoreCase);
         Assert.Null(backend.ReadCurveShaper(available: false));
     }
 
@@ -58,6 +60,28 @@ public class CurveDramMetricsTests
         var r = surface.ApplyCurveShaper(new CurveShaperProfile { Enabled = true }, caps);
         Assert.False(r.Ok);
         Assert.Contains("Curve Shaper", r.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CurveShaperAlternative_never_invents_bands()
+    {
+        Assert.Contains("will not invent", CurveShaperAlternative.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.True(CurveShaperAlternative.Steps().Count >= 4);
+        Assert.DoesNotContain("band 0 =", CurveShaperAlternative.Guidance(), StringComparison.OrdinalIgnoreCase);
+        var cpu = new CpuPboProfile
+        {
+            PptWatts = 120,
+            Cores =
+            {
+                CurveOptimizerCore.FromSigned(0, -15),
+                CurveOptimizerCore.FromSigned(1, -10),
+            },
+        };
+        var summary = CurveShaperAlternative.FormatCoSummary(cpu);
+        Assert.Contains("PPT 120", summary);
+        Assert.Contains("Curve Optimizer", summary);
+        Assert.Contains("not Curve Shaper", summary, StringComparison.OrdinalIgnoreCase);
+        Assert.True(CurveShaperSupport.ProbedExportNames.Count >= 10);
     }
 
     [Fact]
@@ -109,8 +133,10 @@ public class CurveDramMetricsTests
         var guide = RamTimingGuidance.Guidance(p);
         Assert.Contains("EXPO-first", guide, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("not a fabricated DDR5", guide, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Stress after reboot", guide, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("safe table of", guide, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(5, RamTimingGuidance.ExpoFirstSteps().Count);
+        Assert.True(RamTimingGuidance.StressAdvice().Count >= 4);
 
         var warns = RamTimingGuidance.SoftWarnings(p);
         Assert.Contains(warns, w => w.Contains("EXPO", StringComparison.OrdinalIgnoreCase));
@@ -118,6 +144,80 @@ public class CurveDramMetricsTests
         Assert.Contains(warns, w => w.Contains("tRAS", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(warns, w => w.Contains("VDDIO", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(warns, w => w.Contains("FCLK", StringComparison.OrdinalIgnoreCase) && w.Contains("MCLK"));
+
+        Assert.False(p.HasAnySecondary);
+        Assert.Contains("unread", RamTimingGuidance.FormatSecondaryLine(p), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ZenTimings", RamTimingGuidance.FormatSecondaryBlock(p), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DramLab_shows_secondaries_only_when_readable()
+    {
+        var p = new RamTimingProfile
+        {
+            MemClockMhz = 3000,
+            Tcl = 30,
+            Trcd = 36,
+            Trp = 36,
+            Tras = 76,
+            Trfc = 560,
+            VddioMv = 1200,
+            Expo = true,
+            FclkMhz = 2000,
+            UclkMhz = 3000,
+            MclkMhz = 3000,
+            Trc = 114,
+            Tfaw = 32,
+            TrrdS = 8,
+            TwtrL = 16,
+        };
+        Assert.True(p.HasAnySecondary);
+        var sec = RamTimingGuidance.FormatSecondaryBlock(p);
+        Assert.Contains("tRC 114", sec);
+        Assert.Contains("tFAW 32", sec);
+        Assert.DoesNotContain("unread", sec, StringComparison.OrdinalIgnoreCase);
+        var lab = RamTimingGuidance.FormatLabBlock(p);
+        Assert.Contains("UCLK: 3000", lab);
+        Assert.Contains("tRC 114", lab);
+    }
+
+    [Fact]
+    public void DramLabExport_writes_json_without_inventing_secondaries()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "zenloop-dram-" + Guid.NewGuid().ToString("n"));
+        var path = Path.Combine(dir, DramLabExport.FileName);
+        try
+        {
+            var p = new RamTimingProfile
+            {
+                MemClockMhz = 3000,
+                Tcl = 30,
+                Trcd = 36,
+                Trp = 36,
+                Tras = 76,
+                Trfc = 560,
+                VddioMv = 1200,
+                Expo = true,
+                FclkMhz = 2000,
+            };
+            var report = DramLabExport.FromProfile(p, source: "test");
+            Assert.False(report.SecondariesReadable);
+            Assert.Contains("unread", report.Detail, StringComparison.OrdinalIgnoreCase);
+            Assert.True(report.StressAdvice.Count >= 4);
+            Assert.Contains("WinRing0", report.Note, StringComparison.OrdinalIgnoreCase);
+
+            var written = DramLabExport.Write(report, path, atomic: true);
+            Assert.Equal(path, written);
+            var loaded = DramLabExport.TryLoad(path);
+            Assert.NotNull(loaded);
+            Assert.Equal(2000, loaded!.Ram!.FclkMhz);
+            Assert.Null(loaded.Ram.UclkMhz);
+            Assert.Null(loaded.Ram.Trc);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { /* ignore */ }
+        }
     }
 
     [Fact]
@@ -129,6 +229,37 @@ public class CurveDramMetricsTests
         Assert.Equal(2000, p!.FclkMhz);
         Assert.Equal(3000, p.MclkMhz);
         Assert.Null(p.UclkMhz);
+    }
+
+    [Fact]
+    public void RamTimingProtocol_parses_optional_secondaries_when_present()
+    {
+        var p = RamTimingProtocol.TryParse(
+            """{"ok":true,"ram":{"mem_clock_mhz":3000,"vddio_mv":1200,"tcl":30,"trcd":36,"trp":36,"tras":76,"trfc":560,"expo":true,"trc":110,"tfaw":32,"uclk_mhz":3000}}""");
+        Assert.NotNull(p);
+        Assert.Equal(110, p!.Trc);
+        Assert.Equal(32, p.Tfaw);
+        Assert.Equal(3000, p.UclkMhz);
+        Assert.True(p.HasAnySecondary);
+    }
+
+    [Fact]
+    public void Hwinfo_fabric_merge_fills_unread_only()
+    {
+        var p = new RamTimingProfile { MemClockMhz = 3000, FclkMhz = 1800 };
+        var readings = new List<HwinfoReading>
+        {
+            new(6, "FCLK", "MHz", 2000),
+            new(6, "UCLK", "MHz", 3000),
+            new(6, "MCLK", "MHz", 3000),
+        };
+        RamTimingGuidance.MergeFabricFromHwinfo(p, readings);
+        Assert.Equal(1800, p.FclkMhz); // RM value preserved
+        Assert.Equal(3000, p.UclkMhz);
+        Assert.Equal(3000, p.MclkMhz);
+        var picked = HwinfoSensors.PickFabricClocks(readings);
+        Assert.Equal(2000, picked.FclkMhz);
+        Assert.Equal(3000, picked.UclkMhz);
     }
 
     [Fact]
@@ -183,6 +314,7 @@ public class CurveDramMetricsTests
     {
         Assert.Contains("CLR_CMOS", BiosWriteGuard.RamBiosWarning, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Curve Shaper", BiosWriteGuard.CurveShaperUnavailableNote, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("never invents", BiosWriteGuard.CurveShaperWarning, StringComparison.OrdinalIgnoreCase);
         var refused = BiosWriteGuard.RefuseIfCannotPersistBios(PersistMode.Bios, false, false);
         Assert.NotNull(refused);
         Assert.False(refused!.BiosPersisted);

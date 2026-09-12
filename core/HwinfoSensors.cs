@@ -142,6 +142,49 @@ public static class HwinfoSensors
         return v.Value < 20 ? v.Value * 1000.0 : v.Value;
     }
 
+    public readonly record struct FabricClocks(int? FclkMhz, int? UclkMhz, int? MclkMhz);
+
+    /// <summary>
+    /// Pick FCLK / UCLK / MCLK from HWiNFO clock readings when labels match.
+    /// Never invents values — returns nulls when unread.
+    /// </summary>
+    public static FabricClocks PickFabricClocks(IEnumerable<HwinfoReading> readings)
+    {
+        ArgumentNullException.ThrowIfNull(readings);
+        int? fclk = null, uclk = null, mclk = null;
+        foreach (var r in readings)
+        {
+            if (r.Type is not (0 or 6)) continue;
+            if (r.Value is < 400 or > 4000) continue;
+            var s = Norm(r.Label);
+            int mhz = (int)Math.Round(r.Value);
+            if (s is "fclk" || s.Contains("fabric clock") || s.Contains("fclk effective")
+                || (s.Contains("fclk") && !s.Contains("limit")))
+                fclk ??= mhz;
+            else if (s is "uclk" || s.Contains("uclk") || s.Contains("memory controller"))
+                uclk ??= mhz;
+            else if (s is "mclk" || (s.Contains("mclk") && !s.Contains("limit"))
+                     || s is "memory clock" || s.Contains("dram clock"))
+                mclk ??= mhz;
+        }
+        return new FabricClocks(fclk, uclk, mclk);
+    }
+
+    /// <summary>Live HWiNFO fabric clocks when shared memory is present; otherwise all null.</summary>
+    public static FabricClocks TryReadFabricClocks()
+    {
+        try
+        {
+            var readings = ReadLive();
+            if (readings is null || readings.Count == 0) return default;
+            return PickFabricClocks(readings);
+        }
+        catch
+        {
+            return default;
+        }
+    }
+
     static double? Best(
         IEnumerable<HwinfoReading> readings,
         Func<HwinfoReading, bool> typeOk,

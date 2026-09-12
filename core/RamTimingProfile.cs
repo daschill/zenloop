@@ -45,8 +45,57 @@ public sealed class RamTimingProfile
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MclkMhz { get; set; }
 
+    // --- Optional secondaries (null = unread; never invent) ---
+
+    [JsonPropertyName("trc")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Trc { get; set; }
+
+    [JsonPropertyName("tfaw")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Tfaw { get; set; }
+
+    [JsonPropertyName("trrds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TrrdS { get; set; }
+
+    [JsonPropertyName("trrdl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TrrdL { get; set; }
+
+    [JsonPropertyName("twtrs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TwtrS { get; set; }
+
+    [JsonPropertyName("twtrl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TwtrL { get; set; }
+
+    [JsonPropertyName("tcwl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Tcwl { get; set; }
+
+    [JsonPropertyName("twr")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Twr { get; set; }
+
+    [JsonPropertyName("trdrd_scl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TrdrdScl { get; set; }
+
+    [JsonPropertyName("twrwr_scl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TwrwrScl { get; set; }
+
     [JsonIgnore]
     public int DataRateMts => MemClockMhz * 2;
+
+    /// <summary>True when at least one secondary timing was actually read (not invented).</summary>
+    [JsonIgnore]
+    public bool HasAnySecondary =>
+        Trc is not null || Tfaw is not null || TrrdS is not null || TrrdL is not null
+        || TwtrS is not null || TwtrL is not null || Tcwl is not null || Twr is not null
+        || TrdrdScl is not null || TwrwrScl is not null;
 
     static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -133,6 +182,16 @@ public static class RamTimingProtocol
             FclkMhz = Opt("fclk_mhz"),
             UclkMhz = Opt("uclk_mhz"),
             MclkMhz = Opt("mclk_mhz") ?? (I("mem_clock_mhz", 0) > 0 ? I("mem_clock_mhz", 0) : null),
+            Trc = Opt("trc"),
+            Tfaw = Opt("tfaw"),
+            TrrdS = Opt("trrds"),
+            TrrdL = Opt("trrdl"),
+            TwtrS = Opt("twtrs"),
+            TwtrL = Opt("twtrl"),
+            Tcwl = Opt("tcwl"),
+            Twr = Opt("twr"),
+            TrdrdScl = Opt("trdrd_scl"),
+            TwrwrScl = Opt("twrwr_scl"),
         };
     }
 

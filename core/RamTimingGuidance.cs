@@ -1,11 +1,16 @@
 namespace ZenLoop.Core;
 
 /// <summary>
-/// Short, factual RAM guidance — not a DRAM Calculator replacement.
-/// ZenLoop can read/write a primary timing subset via Ryzen Master BIOS mailbox; full tables need BIOS/ZenTimings.
+/// ZenTimings-class RAM read/guidance — not a DRAM Calculator replacement.
+/// ZenLoop can read/write a primary timing subset via Ryzen Master BIOS mailbox;
+/// secondaries appear only when actually reported (never invented).
 /// </summary>
 public static class RamTimingGuidance
 {
+    public const string SecondariesUnreadNote =
+        "Secondaries: unread — AMD CDefaultBIOS mailbox exposes primaries (CL/tRCD/tRP/tRAS/tRFC) only. "
+        + "Use ZenTimings for the full secondary/tertiary suite. ZenLoop will not invent values.";
+
     public static string FormatPrimaryLine(RamTimingProfile p)
     {
         ArgumentNullException.ThrowIfNull(p);
@@ -34,6 +39,43 @@ public static class RamTimingGuidance
         return string.Join(Environment.NewLine, lines);
     }
 
+    /// <summary>ZenTimings-class lab block: primaries + secondaries when readable + fabric clocks.</summary>
+    public static string FormatLabBlock(RamTimingProfile p)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        return FormatDetailBlock(p) + Environment.NewLine + FormatSecondaryBlock(p);
+    }
+
+    public static string FormatSecondaryBlock(RamTimingProfile p)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        if (!p.HasAnySecondary)
+            return SecondariesUnreadNote;
+
+        var bits = new List<string>();
+        void Add(string name, int? v)
+        {
+            if (v is int x) bits.Add($"{name} {x}");
+        }
+        Add("tRC", p.Trc);
+        Add("tFAW", p.Tfaw);
+        Add("tRRD_S", p.TrrdS);
+        Add("tRRD_L", p.TrrdL);
+        Add("tWTR_S", p.TwtrS);
+        Add("tWTR_L", p.TwtrL);
+        Add("tCWL", p.Tcwl);
+        Add("tWR", p.Twr);
+        Add("tRDRD_SCL", p.TrdrdScl);
+        Add("tWRWR_SCL", p.TwrwrScl);
+        return "Secondaries: " + string.Join("  ", bits);
+    }
+
+    public static string FormatSecondaryLine(RamTimingProfile p)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        return p.HasAnySecondary ? FormatSecondaryBlock(p) : "Secondaries: unread (use ZenTimings)";
+    }
+
     public static string FormatFabricClocks(RamTimingProfile p)
     {
         ArgumentNullException.ThrowIfNull(p);
@@ -54,19 +96,32 @@ public static class RamTimingGuidance
         "5. If POST fails: CLR_CMOS / Optimized Defaults, then return to the last known-good EXPO profile.",
     ];
 
+    /// <summary>Post-reboot stress advice (guidance only — ZenLoop does not ship a DRAM stress suite).</summary>
+    public static IReadOnlyList<string> StressAdvice() =>
+    [
+        "After Write RAM BIOS + reboot: stress memory (TM5 / Karhu / HCI MemTest) before gaming.",
+        "Also run a short all-core CPU stress — IMC issues often show under combined load.",
+        "Watch for WHEA / spontaneous reboot; if unstable, loosen the last changed primary or restore EXPO.",
+        "Verify FCLK:MCLK sync target in BIOS/ZenTimings; ZenLoop only displays clocks when RM/HWiNFO report them.",
+        "Keep CLR_CMOS ready for failed POST. ZenLoop never hot-applies full DRAM tables on Ryzen.",
+    ];
+
     public static string Guidance(RamTimingProfile? current = null)
     {
         var head = current is null
-            ? "RAM: read live timings, then write BIOS only after confirm + reboot."
-            : "RAM now:" + Environment.NewLine + FormatDetailBlock(current);
+            ? "DRAM lab: read live timings, then write BIOS only after confirm + reboot."
+            : "DRAM lab now:" + Environment.NewLine + FormatLabBlock(current);
 
         return head + Environment.NewLine + Environment.NewLine
                + "EXPO-first (recommended):" + Environment.NewLine
                + string.Join(Environment.NewLine, ExpoFirstSteps()) + Environment.NewLine + Environment.NewLine
+               + "Stress after reboot:" + Environment.NewLine
+               + string.Join(Environment.NewLine, StressAdvice()) + Environment.NewLine + Environment.NewLine
                + "ZenLoop writes primary CL/tRCD/tRP/tRAS/tRFC + VDDIO via Ryzen Master — not a full secondary/tertiary suite, "
                + "and not a fabricated DDR5 “safe table”. "
-               + "FCLK/UCLK/MCLK show when Ryzen Master reports them; otherwise leave fabric sync to BIOS. "
-               + "Use ZenTimings after reboot. Aggressive DDR5 voltage/timing can fail POST — keep CLR_CMOS ready.";
+               + "FCLK/UCLK/MCLK show when Ryzen Master or HWiNFO reports them; otherwise leave fabric sync to BIOS. "
+               + "Use ZenTimings after reboot. Aggressive DDR5 voltage/timing can fail POST — keep CLR_CMOS ready. "
+               + "No WinRing0.";
     }
 
     /// <summary>Soft sanity checks for UI warnings (not hard blocks — BIOS still confirms).</summary>
@@ -94,6 +149,27 @@ public static class RamTimingGuidance
             warns.Add($"FCLK {fclk} MHz looks unusual for AM5 daily use.");
         if (p.FclkMhz is int f && p.MclkMhz is int m && Math.Abs(f - m) > 50 && Math.Abs(f * 2 - m) > 50)
             warns.Add($"FCLK {f} and MCLK {m} are far apart — 1:1 sync is the usual daily target; desync needs extra validation.");
+        if (p.Trc is int trc && trc < p.Tras)
+            warns.Add($"tRC {trc} is lower than tRAS {p.Tras} — verify against ZenTimings.");
         return warns;
+    }
+
+    /// <summary>
+    /// Merge fabric clocks from HWiNFO when RM left them unread. Never overwrites a known RM value.
+    /// </summary>
+    public static void MergeFabricFromHwinfo(RamTimingProfile p, IReadOnlyList<HwinfoReading>? readings)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        if (readings is null || readings.Count == 0) return;
+        var fabric = HwinfoSensors.PickFabricClocks(readings);
+        MergeFabric(p, fabric);
+    }
+
+    public static void MergeFabric(RamTimingProfile p, HwinfoSensors.FabricClocks fabric)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        if (p.FclkMhz is null && fabric.FclkMhz is int f) p.FclkMhz = f;
+        if (p.UclkMhz is null && fabric.UclkMhz is int u) p.UclkMhz = u;
+        if (p.MclkMhz is null && fabric.MclkMhz is int m) p.MclkMhz = m;
     }
 }

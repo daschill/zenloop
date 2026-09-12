@@ -252,13 +252,19 @@
                                            Text="Curve Shaper: probing…"/>
                                 <Button x:Name="BtnCurveShaperApply" Content="Apply Curve Shaper" Margin="0,0,0,4"
                                         IsEnabled="False" Opacity="0.55" Click="OnCurveShaperApply"
-                                        ToolTip="Requires a real AMD Curve Shaper C export. Disabled when Platform/Device lack the API."/>
+                                        ToolTip="Requires a real AMD Curve Shaper C export with a published ABI. Disabled when Platform/Device lack the API."/>
+                                <TextBlock x:Name="TxtCurveShaperAlt" Style="{StaticResource Label}" Margin="0,4,0,0" TextWrapping="Wrap"
+                                           Text="Signed alternative: use per-core Curve Optimizer + PBO (above). ZenLoop never invents CS bands."/>
 
-                                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="RAM timings (BIOS)"/>
+                                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,4" Text="DRAM lab (read / guidance)"/>
                                 <TextBlock Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
-                                           Text="DDR5 via AMD BIOS mailbox (same as Ryzen Master). EXPO first, then tighten one primary at a time. Write RAM BIOS then reboot. Not a fake DDR5 calculator."/>
-                                <TextBlock x:Name="TxtRamPrimaries" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="ZenTimings-class readout via AMD BIOS mailbox. Primaries always when bound; secondaries only when reported (never invented). EXPO first. No fake DDR5 calculator. No WinRing0."/>
+                                <TextBlock x:Name="TxtRamPrimaries" Style="{StaticResource Label}" Margin="0,0,0,4" TextWrapping="Wrap"
                                            Text="Primaries: read RAM to load live CL-tRCD-tRP-tRAS / tRFC / FCLK"/>
+                                <TextBlock x:Name="TxtRamSecondaries" Style="{StaticResource Label}" Margin="0,0,0,4" TextWrapping="Wrap"
+                                           Text="Secondaries: unread"/>
+                                <TextBlock x:Name="TxtRamFabric" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="FCLK / UCLK / MCLK: unread"/>
                                 <CheckBox x:Name="ChkExpo" Content="EXPO profile" Margin="0,0,0,8"/>
                                 <Grid Margin="0,4,0,4">
                                     <TextBlock Style="{StaticResource Label}" Text="MEM CLOCK"/>
@@ -300,13 +306,20 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="6"/>
                                         <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="6"/>
+                                        <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Button x:Name="BtnRamRead" Content="Read RAM" Click="OnRamRead"/>
-                                    <Button Grid.Column="2" x:Name="BtnRamWrite" Content="Write RAM BIOS" Style="{StaticResource AccentButton}" Click="OnRamWrite"/>
+                                    <Button Grid.Column="2" x:Name="BtnRamExport" Content="Export lab" Click="OnRamExport"
+                                            ToolTip="Export primary/secondary/fabric readout + stress advice to JSON"/>
+                                    <Button Grid.Column="4" x:Name="BtnRamWrite" Content="Write RAM BIOS" Style="{StaticResource AccentButton}" Click="OnRamWrite"/>
                                 </Grid>
-                                <TextBlock x:Name="TxtRamGuidance" Style="{StaticResource Label}" Margin="0,10,0,0"
+                                <TextBlock x:Name="TxtRamStress" Style="{StaticResource Label}" Margin="0,10,0,0"
                                            TextWrapping="Wrap"
-                                           Text="RAM: start from EXPO, tighten slowly. ZenLoop writes primary timings via Ryzen Master; verify with ZenTimings after reboot."/>
+                                           Text="Stress: after Write RAM BIOS + reboot, run memory + CPU stress before gaming. Keep CLR_CMOS ready."/>
+                                <TextBlock x:Name="TxtRamGuidance" Style="{StaticResource Label}" Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="DRAM lab: start from EXPO, tighten slowly. ZenLoop writes primary timings via Ryzen Master; verify with ZenTimings after reboot."/>
                             </StackPanel>
                         </ScrollViewer>
                     </DockPanel>
