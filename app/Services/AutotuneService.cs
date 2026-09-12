@@ -84,6 +84,9 @@ public sealed class AutotuneService
     public string CpuPboProfilePath => Path.Combine(_root, "profiles", "cpu-pbo.json");
     public string RamProfilePath => Path.Combine(_root, "profiles", "ram-timings.json");
     public string ProfilePackExportDir => Path.Combine(_root, "profiles", "exports");
+    public string LogsRoot => Path.Combine(_root, "logs");
+
+    OptimizeForensics? _forensics;
 
     public RamTimingProfile? LoadRamProfile() => RamTimingProfile.TryLoadFile(RamProfilePath);
 
@@ -153,6 +156,42 @@ public sealed class AutotuneService
         => LoadIncompleteOptimize(goal) is not null;
 
     public void ClearOptimizeCheckpoint() => OptimizeCheckpoint.Delete(OptimizeCheckpointPath);
+
+    /// <summary>Mark Optimize aborted (user/fault), write forensics, append FAIL history — do not leave a silent resume ck.</summary>
+    public void MarkOptimizeAborted(string kind, string reason, FaultKind fault = FaultKind.None)
+    {
+        var ck = OptimizeCheckpoint.Load(OptimizeCheckpointPath);
+        if (string.IsNullOrEmpty(ck.RunId) && string.IsNullOrEmpty(ck.LastCompletedPhase) && ck.StockVoltMv == 0)
+        {
+            // Nothing meaningful persisted.
+            return;
+        }
+        ck.MarkAborted(kind, reason, fault, reason);
+        ck.Save(OptimizeCheckpointPath);
+        var forensics = OptimizeForensics.Create(LogsRoot, ck.RunId);
+        forensics.MirrorCheckpoint(ck);
+        try
+        {
+            var since = DateTime.UtcNow.AddMinutes(-20);
+            forensics.WriteFaults(_faults.Since(since), fault == FaultKind.None ? null : fault, reason);
+        }
+        catch { /* best-effort */ }
+        var abortText = OptimizeSummary.FormatAbort(reason);
+        forensics.WriteAbort(abortText);
+        var hist = LoadOptimizeHistory();
+        hist.Add(new OptimizeHistoryEntry
+        {
+            Goal = ck.Goal,
+            Passed = false,
+            Summary = abortText,
+            DailyMv = ck.DailyMv ?? ck.GpuCandidateVoltMv,
+            ClockMhz = ck.ClockMhz ?? ck.GpuCandidateClockMhz,
+            VramMhz = ck.VramMhz ?? ck.GpuCandidateVramMhz,
+            GpuOk = false,
+        });
+        hist.Save(OptimizeHistoryPath);
+        _forensics = forensics;
+    }
 
     public OptimizeHistory LoadOptimizeHistory() => OptimizeHistory.Load(OptimizeHistoryPath);
 
@@ -281,13 +320,23 @@ public sealed class AutotuneService
                 Goal = goal,
                 PlannedPhases = planned,
                 SkipVram = skipVram,
+                Status = OptimizeCheckpoint.StatusRunning,
+                StartedUtc = DateTime.UtcNow,
             };
+            ck.EnsureRunId();
         }
         else
         {
             planned = ck.PlannedPhases.Count > 0 ? ck.PlannedPhases : planned;
             skipVram = ck.SkipVram;
+            ck.Status = OptimizeCheckpoint.StatusRunning;
+            ck.EnsureRunId();
         }
+
+        _forensics = OptimizeForensics.Create(LogsRoot, ck.RunId);
+        ck.Heartbeat("start");
+        ck.Save(OptimizeCheckpointPath);
+        _forensics.MirrorCheckpoint(ck);
 
         var remaining = ResumePlanner.RemainingSteps(planned, ck.LastCompletedPhase);
         bool Need(string phase) => remaining.Contains(phase);
@@ -295,10 +344,14 @@ public sealed class AutotuneService
         async Task CompletePhase(string phase)
         {
             ck.LastCompletedPhase = phase;
+            ck.ActivePhase = phase;
+            ck.Heartbeat(phase);
             ck.Save(OptimizeCheckpointPath);
+            _forensics?.MirrorCheckpoint(ck);
             progress?.Report(new TuneProgress(
                 OptimizeSummary.PhaseChecklist(planned, ck.LastCompletedPhase, null),
                 0, null, phase, true));
+            await Task.CompletedTask;
         }
 
         if (didResume)
@@ -660,10 +713,48 @@ public sealed class AutotuneService
         {
             ct.ThrowIfCancellationRequested();
             Log($"Apply {s.VoltageMv} mV · {s.MaxMhz} MHz · VRAM {s.VramMhz}", frac, null, name, null);
+            // Heartbeat mid-probe for crash forensics (Optimize or GPU-only).
+            try
+            {
+                var ckPath = OptimizeCheckpointPath;
+                if (File.Exists(ckPath))
+                {
+                    var ck = OptimizeCheckpoint.Load(ckPath);
+                    if (!string.IsNullOrEmpty(ck.RunId))
+                    {
+                        ck.Heartbeat("gpu", name);
+                        ck.SetGpuCandidate(s.VoltageMv, s.MaxMhz, s.VramMhz, s.FastTiming);
+                        ck.Save(ckPath);
+                        _forensics ??= OptimizeForensics.Create(LogsRoot, ck.RunId);
+                        _forensics.MirrorCheckpoint(ck);
+                    }
+                }
+            }
+            catch { /* best-effort */ }
+
             await Task.Run(() => _hw.SetGpu(s.MaxMhz, s.MinMhz, s.VoltageMv, s.VramMhz, s.PowerPct, s.FastTiming, s.Fan), ct);
             await Task.Delay(800, ct);
             var res = await StressAsync("gpu", seconds, limits, progress, ct);
             res = res with { Settings = s };
+            var fault = res.Ok ? FaultKind.None : FaultClassifier.ClassifyReason(res.Reason);
+            try
+            {
+                _forensics?.AppendProbe(new OptimizeProbeRecord
+                {
+                    Phase = "gpu",
+                    Name = name,
+                    Ok = res.Ok,
+                    Reason = res.Ok ? "ok" : res.Reason,
+                    FaultKind = fault == FaultKind.None ? null : fault.ToString(),
+                    VoltageMv = s.VoltageMv,
+                    ClockMhz = s.MaxMhz,
+                    VramMhz = s.VramMhz,
+                    Throughput = res.Throughput > 0 ? res.Throughput : null,
+                    TempC = Metric(res.Metrics, "hotspot_c", "gpu_temp_c"),
+                    PowerW = Metric(res.Metrics, "board_power_w", "power_w"),
+                });
+            }
+            catch { /* best-effort */ }
             if (!res.Ok)
                 Log($"FAIL {name}: {res.Reason}", frac, res.Metrics, name, false);
             else
@@ -746,6 +837,36 @@ public sealed class AutotuneService
             Log(
                 $"Voltage search: {found.Evaluated.Count} probes{(found.UsedLinearFallback ? " (linear)" : " (binary)")}. Daily {dailyVolt} mV (margin {margin} mV, confirmed).",
                 0.45);
+
+            // VF-style refine on Tuning2: re-check daily voltage at mid/high clock bands.
+            int mildTarget = Math.Min(clockHi, stockClock + Math.Max(hints.ClockStepMhz * 6, 150));
+            if (TuneScore.NormalizeGoal(goal) == "performance")
+                mildTarget = clockHi;
+            else if (TuneScore.NormalizeGoal(goal) == "efficiency")
+                mildTarget = stockClock;
+            var bands = VoltageSearch.DefaultClockBands(stockClock, mildTarget, Math.Max(50, hints.ClockStepMhz));
+            if (bands.Count > 0)
+            {
+                Log($"Clock-conditioned UV refine at {bands.Count} band(s)…", 0.46);
+                var cond = await VoltageSearch.FindClockConditionedDailyAsync(
+                    stockVolt, dailyVolt, stockClock, bands, voltStep, voltLo, voltHi,
+                    async (v, c) =>
+                    {
+                        var res = await ApplyAndTest($"uv-band-{c}MHz@{v}mV", BaseAt(v, c, stockVram), 0.47);
+                        if (!res.Ok)
+                            sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, FaultClassifier.ClassifyReason(res.Reason) });
+                        return res.Ok;
+                    },
+                    margin);
+                dailyVolt = cond.DailyMv;
+                if (cond.FailVoltageMv is int cf)
+                    foundFailMv = foundFailMv is int pf ? Math.Max(pf, cf) : cf;
+                state.DailyVoltage = dailyVolt;
+                Log(
+                    $"Clock-conditioned UV: daily {dailyVolt} mV (highest stable band {cond.HighestStableClockMhz} MHz, {cond.Evaluated.Count} probes).",
+                    0.48);
+            }
+
             await Complete("voltage");
         }
 
@@ -758,14 +879,19 @@ public sealed class AutotuneService
                 goal, stockClock, lastGoodClock, clockLo, clockHi, hints.ClockStepMhz, hints, memory?.LastGoodClockMhz);
             Log($"Clock search ({TuneScore.NormalizeGoal(goal)}): {candidates.Count} candidates, step {hints.ClockStepMhz} MHz", 0.5);
             double refThr = 0;
-            var walk = await ClockSearch.WalkAsync(
+            int maxBumps = TuneScore.NormalizeGoal(goal) == "efficiency" ? 0 : 2;
+            var walk = await ClockSearch.WalkWithVoltageBumpAsync(
                 goal,
                 candidates,
-                async c =>
+                dailyVolt,
+                stockVolt,
+                AdaptiveSearch.NextVoltageStep(hints.VoltageStepMv, dailyVolt, foundFailMv),
+                maxBumps,
+                async (c, v) =>
                 {
                     var res = await ApplyAndTest(
-                        $"{(TuneScore.NormalizeGoal(goal) == "efficiency" ? "eff" : "oc")}-{c}MHz@{dailyVolt}mV",
-                        BaseAt(dailyVolt, c, stockVram),
+                        $"{(TuneScore.NormalizeGoal(goal) == "efficiency" ? "eff" : "oc")}-{c}MHz@{v}mV",
+                        BaseAt(v, c, stockVram),
                         0.55);
                     if (!res.Ok)
                         sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, FaultClassifier.ClassifyReason(res.Reason) });
@@ -777,6 +903,11 @@ public sealed class AutotuneService
                 },
                 hints,
                 refThr);
+            if (walk.RefinedDailyMv is int refined && refined > dailyVolt)
+            {
+                dailyVolt = refined;
+                state.DailyVoltage = dailyVolt;
+            }
             if (walk.BestMhz is int best)
                 lastGoodClock = best;
             else if (walk.LastStableMhz is int stable)
@@ -785,6 +916,7 @@ public sealed class AutotuneService
                 sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, walk.LastFault });
             Log(
                 $"Clock search: {walk.Evaluated.Count} probes, best {lastGoodClock} MHz"
+                + (walk.VoltageBumps > 0 ? $", +{walk.VoltageBumps} voltage bump(s) → {dailyVolt} mV" : "")
                 + (walk.LastFault != FaultKind.None ? $" (fault {walk.LastFault})" : "")
                 + ".",
                 0.65);

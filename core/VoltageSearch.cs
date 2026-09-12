@@ -230,7 +230,7 @@ public static class VoltageSearch
         return legalMin;
     }
 
-        /// <summary>Fail at a higher mV than a known pass violates undervolt monotonicity.</summary>
+    /// <summary>Fail at a higher mV than a known pass violates undervolt monotonicity.</summary>
     static bool IsNonMonotonic(Dictionary<int, bool> outcomes)
     {
         foreach (var (vPass, ok) in outcomes)
@@ -244,6 +244,86 @@ public static class VoltageSearch
         }
         return false;
     }
+
+    /// <summary>
+    /// VF-style (Tuning2): after a coarse daily at stock clock, re-confirm voltage at higher
+    /// target clocks. Daily becomes the minimum mV that survived the highest target clock band.
+    /// Does not invent multi-point VF curves — ADLX ManualGraphicsTuning2 is a global voltage cap.
+    /// </summary>
+    public static async Task<ClockConditionedVoltageResult> FindClockConditionedDailyAsync(
+        int stockMv,
+        int coarseDailyMv,
+        int stockClockMhz,
+        IReadOnlyList<int> targetClockMhzBands,
+        int stepMv,
+        int legalMin,
+        int legalMax,
+        Func<int, int, Task<bool>> isStableAtClock,
+        int marginMv = DefaultMarginMv,
+        int maxBumpSteps = 4)
+    {
+        if (stepMv < 1) stepMv = DefaultStepMv;
+        if (maxBumpSteps < 1) maxBumpSteps = 1;
+        coarseDailyMv = Math.Clamp(coarseDailyMv, legalMin, legalMax);
+        stockMv = Math.Clamp(stockMv, legalMin, legalMax);
+
+        var bands = (targetClockMhzBands ?? Array.Empty<int>())
+            .Where(c => c > stockClockMhz)
+            .Distinct()
+            .OrderBy(c => c)
+            .ToList();
+
+        int daily = coarseDailyMv;
+        int? failMv = null;
+        var evaluated = new List<(int ClockMhz, int VoltageMv, bool Ok)>();
+        int highestOkClock = stockClockMhz;
+
+        foreach (var clock in bands)
+        {
+            bool bandOk = false;
+            int tryMv = daily;
+            for (int bump = 0; bump <= maxBumpSteps && tryMv <= stockMv; bump++)
+            {
+                tryMv = Math.Clamp(tryMv, legalMin, legalMax);
+                bool ok = await isStableAtClock(tryMv, clock).ConfigureAwait(false);
+                evaluated.Add((clock, tryMv, ok));
+                if (ok)
+                {
+                    daily = tryMv;
+                    highestOkClock = clock;
+                    bandOk = true;
+                    break;
+                }
+                failMv = failMv is int f ? Math.Max(f, tryMv) : tryMv;
+                tryMv = Math.Min(stockMv, tryMv + stepMv);
+            }
+
+            if (!bandOk)
+            {
+                // Could not stabilize this clock band — stop climbing; keep last good daily.
+                if (failMv is int fail)
+                    daily = Math.Max(daily, DailyVoltageAfterFail(fail, marginMv, legalMin, legalMax));
+                break;
+            }
+        }
+
+        daily = Math.Clamp(daily, legalMin, legalMax);
+        return new ClockConditionedVoltageResult(daily, failMv, highestOkClock, evaluated);
+    }
+
+    /// <summary>Default clock bands for VF-style refine: mid OC and near target.</summary>
+    public static IReadOnlyList<int> DefaultClockBands(int stockMhz, int targetMhz, int stepMhz = 50)
+    {
+        if (stepMhz < 1) stepMhz = 50;
+        if (targetMhz <= stockMhz)
+            return Array.Empty<int>();
+        var set = new SortedSet<int>();
+        int mid = stockMhz + ((targetMhz - stockMhz) / 2);
+        mid -= mid % Math.Max(1, stepMhz);
+        if (mid > stockMhz) set.Add(mid);
+        set.Add(targetMhz);
+        return set.ToList();
+    }
 }
 
 public sealed record VoltageSearchResult(
@@ -252,3 +332,9 @@ public sealed record VoltageSearchResult(
     int DailyMv,
     IReadOnlyList<int> Evaluated,
     bool UsedLinearFallback = false);
+
+public sealed record ClockConditionedVoltageResult(
+    int DailyMv,
+    int? FailVoltageMv,
+    int HighestStableClockMhz,
+    IReadOnlyList<(int ClockMhz, int VoltageMv, bool Ok)> Evaluated);
