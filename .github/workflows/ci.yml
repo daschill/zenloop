@@ -42,6 +42,22 @@ jobs:
           path: TestResults
           if-no-files-found: ignore
 
+      - name: Sign artifacts (if SIGNING_CERT_* secrets)
+        env:
+          SIGNING_CERT_PFX: ${{ secrets.SIGNING_CERT_PFX }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+          SIGNING_CERT_PATH: ${{ secrets.SIGNING_CERT_PATH }}
+          SIGNING_TIMESTAMP_URL: ${{ secrets.SIGNING_TIMESTAMP_URL }}
+        shell: pwsh
+        run: |
+          # No-op when secrets absent - unsigned path unchanged.
+          # Full publish+sign is ops; here we only exercise the script against empty dist.
+          # Invoke via pwsh so UTF-8 scripts parse cleanly on windows-latest.
+          New-Item -ItemType Directory -Force -Path dist\ZenLoop | Out-Null
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\sign-artifacts.ps1 -DistDir dist\ZenLoop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Sign step finished (signed only if SIGNING_CERT_* present). See docs/CODE-SIGNING.md."
+
   # Native ADLX / Ryzen Master helpers and live stress need a Windows AMD PC.
   # They are intentionally not built or executed on CI runners.
   note-live-hardware:
@@ -54,3 +70,4 @@ jobs:
           Write-Host "LiveHardware tests (ADLX / Ryzen Master / stress) are skipped in CI."
           Write-Host "Run them manually on a Windows AMD machine with Adrenalin + Ryzen Master installed."
           Write-Host "Filter: --filter Category=LiveHardware"
+          Write-Host "No WinRing0 / raw SMU in tree — multi-vendor uses public signed APIs only."

@@ -34,7 +34,9 @@ public class CommercialProductTests
         var s = PlatformSupport.FromNames("NVIDIA GeForce RTX 4080", "AMD Ryzen 7 9800X3D");
         Assert.False(s.AmdGpuLikely);
         Assert.True(s.AmdCpuLikely);
+        Assert.True(s.NvidiaGpuLikely);
         Assert.True(s.HasUnsupportedHint);
+        Assert.False(s.OptimizePathSupported);
         Assert.Contains("NVIDIA", s.Message, StringComparison.OrdinalIgnoreCase);
     }
 

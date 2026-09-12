@@ -1,6 +1,6 @@
-; ZenLoop — unsigned Inno Setup 6 installer
+; ZenLoop — Inno Setup 6 installer
 ; Build after publish.ps1 (see docs/PACKAGING.md and scripts/pack-installer.ps1).
-; No code-signing certificate required. SmartScreen may warn on first run.
+; SignTool= omitted here; optional Authenticode via scripts/sign-artifacts.ps1 when SIGNING_CERT_* set.
 
 #ifndef MyAppVersion
   #define MyAppVersion "1.2.0"

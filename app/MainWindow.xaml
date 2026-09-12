@@ -209,6 +209,22 @@
                                        Text="SMU: connecting…"/>
                             <TextBlock x:Name="TxtControlCaps" Style="{StaticResource Label}" Margin="0,4,0,0" TextWrapping="Wrap"
                                        Text="Capabilities: probing…"/>
+                            <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,10,0,4" Text="Multi-vendor matrix"/>
+                            <TextBlock x:Name="TxtVendorMatrix" Style="{StaticResource Label}" Margin="0,0,0,4" TextWrapping="Wrap"
+                                       Text="Probing Intel / NVIDIA / AMD capability lanes…"/>
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnNvidiaPowerApply" Content="NVIDIA power Apply"
+                                        IsEnabled="False" Opacity="0.55" Click="OnNvidiaPowerApply"
+                                        ToolTip="Applies only when NVAPI ClientPowerPolicies SetStatus resolves. Never fakes success."/>
+                                <Button Grid.Column="2" x:Name="BtnIntelRefuseInfo" Content="Intel Apply status"
+                                        Click="OnIntelRefuseInfo"
+                                        ToolTip="Intel undervolt has no public signed third-party API — Apply stays refused."/>
+                            </Grid>
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,0,0,8">
                             <StackPanel>

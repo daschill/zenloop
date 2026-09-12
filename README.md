@@ -6,7 +6,7 @@ Windows app that auto undervolts and overclocks **AMD Ryzen + Radeon**, then sho
 
 Download, double-click `ZenLoop.exe`, approve Administrator once, accept the first-run safety/EULA prompt, click **Optimize this PC**. No HWiNFO, Python, or extra tuners required for the WPF flow.
 
-Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON backup (Adrenalin/RM-style). Intel CPUs and NVIDIA GPUs are unsupported for hardware control — the UI says so honestly.
+Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON backup (Adrenalin/RM-style). **Multi-vendor:** Intel/NVIDIA are detected and shown in a capability matrix; Apply only runs when a public signed API resolves (e.g. NVAPI power policies via `nvapi64.dll`). No WinRing0 / raw SMU. Never fake Apply success.
 
 **Curve Shaper** (Ryzen 9000): exhaustive Platform/Device C-export probe (named + PE table). If no real API, the UI stays disabled with an honest reason and points at signed **PBO + Curve Optimizer** instead — never invents bands. See `docs/CURVE-SHAPER.md`.
 
