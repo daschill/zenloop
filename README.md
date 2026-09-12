@@ -12,7 +12,7 @@ Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON ba
 
 **DRAM lab**: ZenTimings-class read/guidance — primaries + secondaries when readable, FCLK/UCLK/MCLK, export JSON, stress advice. No fake DDR5 calculator tables. No WinRing0. See `docs/DRAM-LAB.md`.
 
-**Metrics JSON** for RTSS/HWiNFO users: `%LocalAppData%\ZenLoop\zenloop-metrics.json` (see `docs/METRICS-EXPORT.md`). Not an in-app OSD.
+**Metrics JSON** for scripts/HWiNFO: `%LocalAppData%\ZenLoop\zenloop-metrics.json` (see `docs/METRICS-EXPORT.md`). **RTSS-grade OSD**: shared-memory custom layer + `zenloop-osd.txt` when RTSS is running (see `docs/RTSS-OSD.md`). **UV bake-off**: stock vs ZenLoop vs optional Adrenalin profile → local report (`docs/UV-BAKEOFF.md`).
 
 ## Requirements (Windows AMD PC)
 

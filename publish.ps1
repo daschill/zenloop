@@ -45,6 +45,12 @@ $recovery = Join-Path $Root "docs\RECOVERY.md"
 if (Test-Path $recovery) {
     Copy-Item $recovery (Join-Path $out "RECOVERY.md") -Force
 }
+foreach ($doc in @("METRICS-EXPORT.md", "RTSS-OSD.md", "UV-BAKEOFF.md")) {
+    $src = Join-Path $Root "docs\$doc"
+    if (Test-Path $src) {
+        Copy-Item $src (Join-Path $out $doc) -Force
+    }
+}
 
 $readme = @"
 ZenLoop $version
@@ -70,6 +76,7 @@ No code signing certificate is required to run from this folder. Windows SmartSc
 on first run of an unsigned build; that is expected until a signed release is published.
 
 Recovery: see RECOVERY.md (Adrenalin Default, clear CO, CLR_CMOS). About → No opens the guide.
+RTSS OSD: RTSS-OSD.md. Metrics JSON: METRICS-EXPORT.md. UV bake-off: UV-BAKEOFF.md.
 Optional installers: scripts\pack-installer.ps1 (Inno / MSIX, unsigned). Update check: About dialog.
 "@
 Set-Content -Path (Join-Path $out "README.txt") -Value $readme -Encoding UTF8

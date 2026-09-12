@@ -379,6 +379,8 @@
                             <UniformGrid Columns="3" Rows="3" Margin="0,0,0,10">
                                 <Button x:Name="BtnAutoGpu" Content="Auto GPU UV + OC" Style="{StaticResource AccentButton}" Margin="0,0,8,8" Click="OnAutoGpu"/>
                                 <Button x:Name="BtnAmdUv" Content="AMD auto undervolt" Margin="0,0,8,8" Click="OnAmdAuto"/>
+                                <Button x:Name="BtnUvBakeOff" Content="UV bake-off" Margin="0,0,8,8" Click="OnUvBakeOff"
+                                        ToolTip="Compare stock vs ZenLoop UV vs optional Adrenalin profile; writes a local report."/>
                                 <Button x:Name="BtnStop" Content="Stop" Style="{StaticResource DangerButton}" Margin="0,0,0,8" Click="OnStop" IsEnabled="False"/>
                                 <Button x:Name="BtnStressGpu" Content="Stress GPU" Margin="0,0,8,8" Click="OnStressGpu"/>
                                 <Button x:Name="BtnStressCpu" Content="Stress CPU" Margin="0,0,8,8" Click="OnStressCpu"/>

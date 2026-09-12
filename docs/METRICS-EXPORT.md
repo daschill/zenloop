@@ -1,6 +1,6 @@
 # RTSS / HWiNFO metrics export (schema 2)
 
-ZenLoop does **not** ship an in-game OSD. For overlays, use **HWiNFO + RivaTuner Statistics Server (RTSS)** as usual.
+ZenLoop keeps this **JSON** export for scripts and file watchers. For an RTSS-grade OSD path (shared-memory custom layer + text file + ZenLoop MMF), see [RTSS-OSD.md](./RTSS-OSD.md).
 
 ## Snapshot file
 
@@ -61,4 +61,4 @@ Example:
 }
 ```
 
-Point a script or custom sensor at that path. Prefer `session` / flat before-after fields for Optimize results; use HWiNFO shared memory for high-rate OSD sensors. Do not run Afterburner GPU control alongside Adrenalin on the same Radeon.
+Point a script or custom sensor at that path. Prefer `session` / flat before-after fields for Optimize results. For in-game text, ZenLoop also publishes an RTSS OSD slot when RTSS is running (see [RTSS-OSD.md](./RTSS-OSD.md)). Use HWiNFO shared memory for high-rate sensor OSD. Do not run Afterburner GPU control alongside Adrenalin on the same Radeon.

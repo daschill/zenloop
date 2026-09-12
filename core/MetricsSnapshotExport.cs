@@ -158,7 +158,8 @@ public static class MetricsSnapshotExport
     public static string PathHelp =>
         $"ZenLoop writes the last Optimize session + live sample to:{Environment.NewLine}"
         + $"  {DefaultPath}{Environment.NewLine}"
-        + "Point RTSS + HWiNFO (or a script) at that JSON file. ZenLoop is not an in-game OSD."
+        + "JSON export is kept for scripts / HWiNFO watchers. RTSS-grade OSD uses shared memory"
+        + $" (owner {RtssOsdBridge.OwnerId}) — see docs/RTSS-OSD.md."
         + $"{Environment.NewLine}Schema {SchemaVersion}: stable snake_case fields — see docs/METRICS-EXPORT.md.";
 
     static readonly JsonSerializerOptions JsonOpts = new()
