@@ -164,7 +164,7 @@
                         <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold"
                                    Text="Precision Boost Overdrive"/>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Margin="0,2,0,8"
-                                   Text="Writes Precision Boost Overdrive + per-core Curve Optimizer into AMD BIOS from Windows (Ryzen Master mailbox). Approve UAC. Reboot after a successful BIOS write."
+                                   Text="Session SMU + optional BIOS persist (Ryzen Master mailbox). Boost override is not available from Windows. Approve UAC for writes. Reboot after a successful BIOS write."
                                    TextWrapping="Wrap"/>
                         <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
                             <Grid>
@@ -185,8 +185,21 @@
                                 <Button x:Name="BtnPboTune" Content="Auto-tune CO" Style="{StaticResource GoodButton}" Click="OnPboTune"/>
                                 <Button Grid.Column="2" x:Name="BtnPboRead" Content="Read SMU" Click="OnPboRead"/>
                             </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnPboClearSession" Content="Clear session CO" Click="OnPboClearSession"
+                                        ToolTip="Sets Curve Optimizer offsets to 0 for this Windows session only. Does not undo BIOS."/>
+                                <Button Grid.Column="2" x:Name="BtnPboStockBios" Content="Write stock BIOS" Click="OnPboStockBios"
+                                        ToolTip="Writes CO=0 + current PPT/TDC/EDC into AMD BIOS mailbox. Not a full UEFI reset — CLR_CMOS for that."/>
+                            </Grid>
                             <TextBlock x:Name="TxtPboBackend" Style="{StaticResource Label}" Margin="0,6,0,0" TextWrapping="Wrap"
                                        Text="SMU: connecting…"/>
+                            <TextBlock x:Name="TxtControlCaps" Style="{StaticResource Label}" Margin="0,4,0,0" TextWrapping="Wrap"
+                                       Text="Capabilities: probing…"/>
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,0,0,8">
                             <StackPanel>
@@ -207,10 +220,14 @@
                                 </Grid>
                                 <Slider x:Name="SldEdc" Minimum="90" Maximum="640" TickFrequency="1" IsSnapToTickEnabled="True" Value="170" ValueChanged="OnPboSlider"/>
                                 <Grid Margin="0,8,0,4">
-                                    <TextBlock Style="{StaticResource Label}" Text="boost override"/>
+                                    <TextBlock Style="{StaticResource Label}" Text="boost override (N/A from Windows)"/>
                                     <TextBlock x:Name="LblBoost" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="+200 MHz"/>
                                 </Grid>
-                                <Slider x:Name="SldBoost" Minimum="0" Maximum="200" TickFrequency="25" IsSnapToTickEnabled="True" Value="200" ValueChanged="OnPboSlider"/>
+                                <Slider x:Name="SldBoost" Minimum="0" Maximum="200" TickFrequency="25" IsSnapToTickEnabled="True" Value="200"
+                                        IsEnabled="False" Opacity="0.55" ValueChanged="OnPboSlider"
+                                        ToolTip="Not applied: AMD Platform.dll has no C export for PBO boost override."/>
+                                <TextBlock Style="{StaticResource Label}" Margin="0,0,0,4" TextWrapping="Wrap"
+                                           Text="Boost override cannot be written from Windows (no RM C API). Slider kept for profile display only."/>
                                 <Grid Margin="0,8,0,4">
                                     <TextBlock Style="{StaticResource Label}" Text="PBO SCALAR"/>
                                     <TextBlock x:Name="LblScalar" HorizontalAlignment="Right" Style="{StaticResource Label}" Text="1x"/>

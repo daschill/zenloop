@@ -26,12 +26,16 @@ public sealed class LoopbackSmuBackend : ISmuBackend
         ArgumentNullException.ThrowIfNull(profile);
         _applied = profile.Clone();
         _lastPersist = persist;
+        bool bios = persist == PersistMode.Bios;
         return new ApplyResult
         {
             SessionApplied = true,
-            BiosPersisted = persist == PersistMode.Bios,
+            BiosPersisted = bios,
             CoWritten = true,
+            RequiresReboot = bios,
+            BoostOverrideApplied = false,
             Backend = Name,
+            Note = BiosWriteGuard.BoostUnavailableNote,
         };
     }
 
@@ -80,13 +84,22 @@ public sealed class SmuService
 
     public CpuPboProfile? Read() => _backend.Read();
 
+    public WindowsControlSurface ControlSurface() => new(this);
+
+    public WindowsControlCapabilities ProbeCapabilities(string? cpuInfoJson = null, GpuControlProbe? gpu = null)
+        => ControlSurface().Probe(cpuInfoJson, gpu);
+
     public RamTimingProfile? ReadRam()
         => _backend is AmdRyzenMasterBackend amd ? amd.ReadRam() : null;
 
     public ApplyResult ApplyRam(RamTimingProfile profile)
     {
         if (_backend is AmdRyzenMasterBackend amd)
-            return amd.ApplyRam(profile);
+        {
+            var r = amd.ApplyRam(profile);
+            if (r.BiosPersisted) r.RequiresReboot = true;
+            return r;
+        }
         return new ApplyResult
         {
             SessionApplied = false,

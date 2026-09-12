@@ -18,6 +18,15 @@ public static class BiosWriteGuard
         "This applies session SMU changes (PBO / Curve Optimizer) via AMD Ryzen Master.\n\n"
         + "Values reset on reboot unless you later use Write to BIOS. Close games first. Requires Administrator for a live SMU write.";
 
+    public const string StockBiosWarning =
+        "This writes STOCK-LIKE Precision Boost Overdrive limits and Curve Optimizer = 0 into AMD BIOS.\n\n"
+        + "It clears ZenLoop CO offsets in firmware, but does NOT restore the full UEFI setup menu or undo unrelated BIOS changes.\n\n"
+        + "For a complete motherboard reset use CLR_CMOS / Optimized Defaults. Requires Administrator. Reboot after a successful write.";
+
+    public const string BoostUnavailableNote =
+        "PBO boost override (+MHz) cannot be applied from Windows: AMD Platform.dll has no C export for it "
+        + "(GetCurrentFMaxCPU is read-only). The slider is display-only.";
+
     /// <summary>Refuse BIOS-mode apply when the process is not elevated and elevation is not allowed.</summary>
     public static ApplyResult? RefuseIfCannotPersistBios(PersistMode persist, bool isAdministrator, bool allowElevate)
     {
@@ -56,6 +65,8 @@ public static class BiosWriteGuard
         {
             result.Error = "BIOS persist failed: helper did not confirm bios_persisted (no silent success).";
         }
+        if (result.BiosPersisted)
+            result.RequiresReboot = true;
         return result;
     }
 }

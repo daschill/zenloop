@@ -26,6 +26,8 @@ public partial class MainWindow : Window
     HwSnapshot? _last;
     readonly List<Slider> _coSliders = new();
     readonly List<TextBlock> _coLabels = new();
+    WindowsControlCapabilities? _caps;
+    WindowsControlSurface? _control;
 
     public MainWindow()
     {
@@ -49,6 +51,7 @@ public partial class MainWindow : Window
             _hw = await Task.Run(() => new HwClient());
             _tune = new AutotuneService(_hw);
             _smu = SmuService.CreateProduction();
+            _control = _smu.ControlSurface();
             _settings = _tune.LoadSettings();
             LoadSettingsToUi();
             _tray = new TrayService(this);
@@ -149,9 +152,10 @@ public partial class MainWindow : Window
         if (_smu is null) return;
         try
         {
+            string? info = null;
             if (_smu.Backend is AmdRyzenMasterBackend amd)
             {
-                var info = await Task.Run(() => amd.InfoJson());
+                info = await Task.Run(() => amd.InfoJson());
                 TxtPboBackend.Text = SmuStatusLine(info);
                 var live = CpuSmuProtocol.TryParseProfile(info);
                 if (live is not null)
@@ -159,11 +163,42 @@ public partial class MainWindow : Window
             }
             else
                 TxtPboBackend.Text = $"SMU: {_smu.BackendName}";
+
+            var gpuProbe = _last is null
+                ? null
+                : GpuControlProbe.FromRanges(
+                    _last.ClockRange is not null || _last.VoltageRange is not null,
+                    _last.Fan is not null);
+            _caps = await Task.Run(() => _smu.ProbeCapabilities(info, gpuProbe));
+            ApplyCapabilityUi(_caps);
         }
         catch (Exception ex)
         {
             TxtPboBackend.Text = "SMU: " + ex.Message;
+            TxtControlCaps.Text = "Capabilities: probe failed — " + ex.Message;
         }
+    }
+
+    void ApplyCapabilityUi(WindowsControlCapabilities caps)
+    {
+        TxtControlCaps.Text = caps.StatusLine();
+        BtnPboApply.IsEnabled = caps.SessionPbo || caps.SessionCo;
+        BtnPboTune.IsEnabled = caps.SessionCo;
+        BtnPboClearSession.IsEnabled = caps.SessionCo || caps.SessionPbo;
+        BtnPboBios.IsEnabled = caps.BiosPbo || caps.BiosCo;
+        BtnPboStockBios.IsEnabled = caps.BiosStockWrite;
+        BtnRamWrite.IsEnabled = caps.BiosRam;
+        BtnRamRead.IsEnabled = caps.BiosRam;
+        SldBoost.IsEnabled = caps.BoostOverride;
+        SldBoost.Opacity = caps.BoostOverride ? 1.0 : 0.55;
+        if (!caps.BoostOverride)
+            LblBoost.Text = $"+{(int)SldBoost.Value} MHz (not applied)";
+        if (!caps.HelperAvailable && !string.IsNullOrEmpty(caps.Error))
+            Log("Control: " + caps.Error);
+        else if (!caps.BiosPbo)
+            Log("BIOS persist unavailable (CDefaultBIOS not bound). Session SMU only until reboot.");
+        if (!caps.BoostOverride)
+            Log(BiosWriteGuard.BoostUnavailableNote);
     }
 
     static string SmuStatusLine(string json)
@@ -456,11 +491,14 @@ public partial class MainWindow : Window
             return;
         await RunExclusive("Writing RAM timings to BIOS…", async ct =>
         {
-            var r = await Task.Run(() => _smu.ApplyRam(profile), ct);
+            var surface = _control ?? _smu.ControlSurface();
+            var r = await Task.Run(() => surface.ApplyRam(profile), ct);
             _tune?.SaveRamProfile(profile);
-            Log($"RAM BIOS persist={r.BiosPersisted} {(r.Error ?? "ok")}");
+            Log($"RAM BIOS persist={r.BiosPersisted} reboot={r.RequiresReboot} {(r.Error ?? "ok")}");
             if (!r.BiosPersisted)
                 throw new HwException(r.Error ?? "RAM BIOS apply failed");
+            if (r.RequiresReboot)
+                Log("Reboot required for RAM BIOS timings.");
         });
     }
 
@@ -536,21 +574,80 @@ public partial class MainWindow : Window
     async Task ApplyPboAsync(PersistMode persist)
     {
         if (_smu is null) return;
+        if (persist == PersistMode.Bios && _caps is { BiosPbo: false, BiosCo: false })
+        {
+            MessageBox.Show(this,
+                "BIOS persist is not available on this PC (CDefaultBIOS not bound). Session apply still works until reboot.",
+                "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var profile = UiProfile();
         await RunExclusive(persist == PersistMode.Bios ? "BIOS persist PBO + Curve Optimizer…" : "Applying PBO session via SMU…",
             async ct =>
             {
-                var result = await Task.Run(() => _smu.Apply(profile, persist), ct);
-                Log($"PBO apply backend={result.Backend} session={result.SessionApplied} bios={result.BiosPersisted} co={result.CoWritten}");
+                var surface = _control ?? _smu.ControlSurface();
+                var result = await Task.Run(() => surface.Apply(profile, persist), ct);
+                Log($"PBO apply backend={result.Backend} session={result.SessionApplied} bios={result.BiosPersisted} co={result.CoWritten} reboot={result.RequiresReboot} boost_applied={result.BoostOverrideApplied}");
                 if (result.Error is string err)
                     Log("PBO: " + err);
+                if (result.Note is string note)
+                    Log("PBO note: " + note);
                 TxtPboBackend.Text = $"SMU: {result.Backend}  session={(result.SessionApplied ? "applied" : "no")}  BIOS={(result.BiosPersisted ? "persisted" : "not persisted")}  CO={(result.CoWritten ? "written" : "not written")}";
                 if (!result.SessionApplied || (profile.Cores.Count > 0 && !result.CoWritten))
                     throw new HwException(result.Error ?? "PBO apply failed (per-core Curve Optimizer not written)");
                 if (persist == PersistMode.Bios && !result.BiosPersisted)
                     throw new HwException(result.Error ?? "BIOS persist failed");
+                if (result.RequiresReboot)
+                    Log("Reboot required for BIOS values to take effect in firmware.");
+                if (!result.BoostOverrideApplied && profile.BoostOverrideMhz != 0)
+                    Log(BiosWriteGuard.BoostUnavailableNote);
                 _tune?.SaveCpuPboProfile(profile);
             });
+    }
+
+    async void OnPboClearSession(object sender, RoutedEventArgs e)
+    {
+        if (_smu is null) return;
+        if (!ConfirmDangerousWrite(
+                "Clear Curve Optimizer offsets to 0 for this Windows session only.\n\nDoes not undo BIOS. Values reset on reboot unless you Write stock BIOS.",
+                "Clear session CO", requireAdmin: true))
+            return;
+        await RunExclusive("Clearing session Curve Optimizer…", async ct =>
+        {
+            var surface = _control ?? _smu.ControlSurface();
+            var r = await Task.Run(() => surface.RestoreSessionStock(UiProfile()), ct);
+            Log($"Session stock CO clear session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+            if (!r.SessionApplied)
+                throw new HwException(r.Error ?? "Session CO clear failed");
+            await Dispatcher.InvokeAsync(() =>
+            {
+                foreach (var s in _coSliders) s.Value = 0;
+                OnPboSlider(this, new RoutedPropertyChangedEventArgs<double>(0, 0));
+            });
+        });
+    }
+
+    async void OnPboStockBios(object sender, RoutedEventArgs e)
+    {
+        if (_smu is null) return;
+        if (_caps is { BiosStockWrite: false })
+        {
+            MessageBox.Show(this,
+                "Stock BIOS write is not available (CDefaultBIOS not bound). Use Clear session CO for this boot, or CLR_CMOS for a full motherboard reset.",
+                "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!ConfirmDangerousWrite(BiosWriteGuard.StockBiosWarning, "Write stock BIOS", requireAdmin: true))
+            return;
+        await RunExclusive("Writing stock-like PBO + CO=0 to BIOS…", async ct =>
+        {
+            var surface = _control ?? _smu.ControlSurface();
+            var r = await Task.Run(() => surface.WriteStockToBios(UiProfile()), ct);
+            Log($"Stock BIOS persist={r.BiosPersisted} reboot={r.RequiresReboot} {(r.Error ?? "ok")}");
+            if (!r.BiosPersisted)
+                throw new HwException(r.Error ?? "Stock BIOS write failed");
+            Log("Reboot required. This is not a full UEFI Optimized Defaults — use CLR_CMOS if POST fails.");
+        });
     }
 
     async void OnPboRead(object sender, RoutedEventArgs e)

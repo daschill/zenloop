@@ -92,8 +92,13 @@ public sealed class ApplyResult
     public bool SessionApplied { get; set; }
     public bool BiosPersisted { get; set; }
     public bool CoWritten { get; set; }
+    /// <summary>True when a BIOS mailbox write succeeded; firmware values apply after reboot.</summary>
+    public bool RequiresReboot { get; set; }
+    /// <summary>Always false today — no Platform C export for PBO boost override.</summary>
+    public bool BoostOverrideApplied { get; set; }
     public string Backend { get; set; } = "";
     public string? Error { get; set; }
+    public string? Note { get; set; }
 
     [JsonIgnore]
     public bool Ok => SessionApplied && Error is null;

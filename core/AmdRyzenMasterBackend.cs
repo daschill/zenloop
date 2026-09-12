@@ -155,7 +155,7 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
     }
 
     static bool IsInfo(IReadOnlyList<string> args)
-        => args.Count > 0 && args[0] is "info" or "read" or "telemetry" or "ram-read";
+        => args.Count > 0 && args[0] is "info" or "read" or "telemetry" or "ram-read" or "caps";
 
     static string RunDirect(string exe, IReadOnlyList<string> args, int timeoutMs)
     {
