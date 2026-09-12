@@ -152,8 +152,12 @@ public class CurveDramMetricsTests
                 pass: true);
             Assert.Equal("optimize", snap.Source);
             Assert.Equal(MetricsSnapshotExport.SchemaVersion, snap.Schema);
+            Assert.True(snap.Schema >= 2);
+            Assert.Equal("Pass", snap.Result);
+            Assert.NotNull(snap.Live);
+            Assert.Equal(62.5, snap.Live!.CpuTempC);
 
-            var written = MetricsSnapshotExport.Write(snap, path);
+            var written = MetricsSnapshotExport.Write(snap, path, atomic: true);
             Assert.Equal(path, written);
             Assert.True(File.Exists(path));
 
@@ -162,9 +166,12 @@ public class CurveDramMetricsTests
             Assert.Equal(62.5, loaded!.Metrics["cpu_temp_c"]);
             Assert.Equal("balanced", loaded.Goal);
             Assert.True(loaded.Pass);
+            Assert.Equal("Pass", loaded.Result);
             Assert.Contains(MetricsSnapshotExport.FileName, MetricsSnapshotExport.PathHelp);
             Assert.EndsWith(MetricsSnapshotExport.FileName, MetricsSnapshotExport.DefaultPath);
-            Assert.Contains("ZenLoop", MetricsSnapshotExport.DefaultPath);        }
+            Assert.Contains("ZenLoop", MetricsSnapshotExport.DefaultPath);
+            Assert.Contains("Schema 2", MetricsSnapshotExport.PathHelp);
+        }
         finally
         {
             try { Directory.Delete(dir, true); } catch { /* ignore */ }
