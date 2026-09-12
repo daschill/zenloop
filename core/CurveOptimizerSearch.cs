@@ -58,7 +58,8 @@ public static class CurveOptimizerSearch
         int boostOverrideMhz,
         int scalar = 1,
         int step = DefaultStep,
-        int maxMagnitude = DefaultMaxMagnitude)
+        int maxMagnitude = DefaultMaxMagnitude,
+        IReadOnlyList<int>? priorMagnitudes = null)
     {
         if (logicalCores < 1) throw new ArgumentOutOfRangeException(nameof(logicalCores));
         if (step < 1) step = DefaultStep;
@@ -68,26 +69,57 @@ public static class CurveOptimizerSearch
         int probes = 0;
         for (int i = 0; i < logicalCores; i++)
         {
+            int? prior = priorMagnitudes is not null && i < priorMagnitudes.Count
+                ? priorMagnitudes[i]
+                : null;
+            var (_, winHi) = AdaptiveSearch.CoSearchWindow(prior, step, maxMagnitude);
+
             int bestMag = 0;
             probes++;
-            if (await coreStableAtSignedOffset(i, 0).ConfigureAwait(false))
+            if (!await coreStableAtSignedOffset(i, 0).ConfigureAwait(false))
             {
-                int lo = 1;
-                int hi = maxMagnitude / step;
-                while (lo <= hi)
+                cores.Add(new CurveOptimizerCore { Core = i, Sign = "Negative", Magnitude = 0 });
+                continue;
+            }
+
+            int searchLo = 1;
+            int searchHi = maxMagnitude / step;
+
+            if (prior is int p && p > 0)
+            {
+                int priorMag = Math.Clamp(p - (p % step), step, maxMagnitude);
+                probes++;
+                if (await coreStableAtSignedOffset(i, -priorMag).ConfigureAwait(false))
                 {
-                    int mid = lo + (hi - lo) / 2;
-                    int mag = mid * step;
-                    probes++;
-                    if (await coreStableAtSignedOffset(i, -mag).ConfigureAwait(false))
-                    {
-                        bestMag = mag;
-                        lo = mid + 1;
-                    }
-                    else
-                        hi = mid - 1;
+                    bestMag = priorMag;
+                    // Prior still good — only explore upward within the seeded window.
+                    searchLo = priorMag / step + 1;
+                    searchHi = Math.Max(searchLo - 1, winHi / step);
+                }
+                else
+                {
+                    // Prior too aggressive — binary search below it.
+                    searchLo = 1;
+                    searchHi = Math.Max(0, priorMag / step - 1);
                 }
             }
+
+            int lo = searchLo;
+            int hi = searchHi;
+            while (lo <= hi)
+            {
+                int mid = lo + (hi - lo) / 2;
+                int mag = mid * step;
+                probes++;
+                if (await coreStableAtSignedOffset(i, -mag).ConfigureAwait(false))
+                {
+                    bestMag = mag;
+                    lo = mid + 1;
+                }
+                else
+                    hi = mid - 1;
+            }
+
             cores.Add(new CurveOptimizerCore
             {
                 Core = i,
@@ -117,12 +149,14 @@ public static class CurveOptimizerSearch
         CpuPboProfile profile,
         Func<IReadOnlyList<int>, Task<bool>> allCoresStableAtOffsets,
         int step = DefaultStep,
-        int maxRounds = 64)
+        int maxRounds = 64,
+        int backoffSteps = 1)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(allCoresStableAtOffsets);
         if (step < 1) step = DefaultStep;
         if (maxRounds < 1) maxRounds = 1;
+        if (backoffSteps < 1) backoffSteps = 1;
 
         var ordered = profile.Cores.OrderBy(c => c.Core).ToList();
         if (ordered.Count == 0)
@@ -148,7 +182,7 @@ public static class CurveOptimizerSearch
             if (worst < 0 || worstMag <= 0)
                 break;
 
-            int next = worstMag - step;
+            int next = worstMag - step * backoffSteps;
             offsets[worst] = next > 0 ? -next : 0;
         }
 

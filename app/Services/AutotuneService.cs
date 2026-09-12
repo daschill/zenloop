@@ -76,6 +76,7 @@ public sealed class AutotuneService
     }
 
     public string ProgressPath => Path.Combine(_root, "logs", "autotune-progress.json");
+    public string MachineMemoryPath => Path.Combine(_root, "profiles", "machine-tune-memory.json");
     public string StartupProfilePath => Path.Combine(_root, "profiles", "startup.json");
     public string CpuPboProfilePath => Path.Combine(_root, "profiles", "cpu-pbo.json");
     public string RamProfilePath => Path.Combine(_root, "profiles", "ram-timings.json");
@@ -487,39 +488,59 @@ public sealed class AutotuneService
             await Complete("baseline");
         }
 
+        var memory = MachineTuneMemory.TryLoadMatching(MachineMemoryPath, stockVolt, stockClock, stockVram, goal);
+        var hints = AdaptiveSearch.FromFault(memory?.LastFault ?? FaultKind.None, AdaptiveSearch.Defaults(stepC));
+        FaultKind sessionFault = memory?.LastFault ?? FaultKind.None;
+
         int dailyVolt = state.DailyVoltage ?? stockVolt;
+        int? foundFailMv = memory?.FailVoltageMv;
         if (Need("voltage"))
         {
-            Log("Binary voltage search…", 0.15);
+            int voltStep = hints.VoltageStepMv;
+            int searchMin = VoltageSearch.SearchFloorFromMemory(
+                voltLo, voltStep, memory?.DailyVoltageMv, memory?.FailVoltageMv);
+            int margin = VoltageSearch.MarginForFault(sessionFault, hints.VoltageMarginMv);
+            Log($"Binary voltage search… (floor {searchMin} mV, step {voltStep}, margin {margin})", 0.15);
             int probe = 0;
-            int probeTotalHint = Math.Max(3, (int)Math.Ceiling(Math.Log2(Math.Max(2, VoltageSearch.LinearCandidates(stockVolt, voltLo, VoltageSearch.DefaultStepMv).Count))) + 1);
+            int probeTotalHint = Math.Max(3, (int)Math.Ceiling(Math.Log2(Math.Max(2, VoltageSearch.LinearCandidates(stockVolt, searchMin, voltStep).Count))) + 1);
             var found = await VoltageSearch.FindMinStableAsync(
-                stockVolt, voltLo, VoltageSearch.DefaultStepMv, voltLo, voltHi,
+                stockVolt, searchMin, voltStep, voltLo, voltHi,
                 async v =>
                 {
                     probe++;
                     Log($"Voltage probe {probe}/≈{probeTotalHint}: {v} mV", 0.15 + 0.25 * Math.Min(1, probe / (double)Math.Max(1, probeTotalHint)));
                     var res = await ApplyAndTest($"uv-{v}mV", BaseAt(v, stockClock, stockVram), 0.2);
+                    if (!res.Ok)
+                        sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, FaultClassifier.ClassifyReason(res.Reason) });
                     return res.Ok;
                 },
-                VoltageSearch.DefaultMarginMv);
+                margin);
 
             dailyVolt = found.DailyMv;
+            foundFailMv = found.FailVoltageMv ?? foundFailMv;
             if (found.UsedLinearFallback)
                 Log("Voltage oracle non-monotonic — used linear fallback from stock.", 0.42);
 
+            // Re-adapt margin if voltage phase saw a hard fault.
+            hints = AdaptiveSearch.FromFault(sessionFault, hints);
+            margin = VoltageSearch.MarginForFault(sessionFault, hints.VoltageMarginMv);
+            if (found.FailVoltageMv is int failV)
+                dailyVolt = Math.Max(dailyVolt, VoltageSearch.DailyVoltageAfterFail(failV, margin, voltLo, voltHi));
+
             Log($"Confirming daily {dailyVolt} mV…", 0.43);
             dailyVolt = await VoltageSearch.ConfirmDailyAsync(
-                dailyVolt, stockVolt, VoltageSearch.DefaultStepMv, voltLo, voltHi,
+                dailyVolt, stockVolt, voltStep, voltLo, voltHi,
                 async v =>
                 {
                     var res = await ApplyAndTest($"daily-{v}mV", BaseAt(v, stockClock, stockVram), 0.44);
+                    if (!res.Ok)
+                        sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, FaultClassifier.ClassifyReason(res.Reason) });
                     return res.Ok;
                 });
 
             state.DailyVoltage = dailyVolt;
             Log(
-                $"Voltage search: {found.Evaluated.Count} probes{(found.UsedLinearFallback ? " (linear)" : " (binary)")}. Daily {dailyVolt} mV (margin {VoltageSearch.DefaultMarginMv} mV, confirmed).",
+                $"Voltage search: {found.Evaluated.Count} probes{(found.UsedLinearFallback ? " (linear)" : " (binary)")}. Daily {dailyVolt} mV (margin {margin} mV, confirmed).",
                 0.45);
             await Complete("voltage");
         }
@@ -527,25 +548,42 @@ public sealed class AutotuneService
         int lastGoodClock = state.LastGoodClock ?? stockClock;
         if (Need("clock"))
         {
-            var candidates = ClockSearch.Candidates(goal, stockClock, lastGoodClock, clockLo, clockHi, stepC);
-            if (goal.Equals("efficiency", StringComparison.OrdinalIgnoreCase)
-                || goal.Equals("eff", StringComparison.OrdinalIgnoreCase))
-            {
-                foreach (var c in candidates)
+            hints = AdaptiveSearch.FromFault(sessionFault, AdaptiveSearch.Defaults(
+                AdaptiveSearch.NextClockStep(stepC, sessionFault, nearCliff: false)));
+            var candidates = ClockSearch.Candidates(
+                goal, stockClock, lastGoodClock, clockLo, clockHi, hints.ClockStepMhz, hints, memory?.LastGoodClockMhz);
+            Log($"Clock search ({TuneScore.NormalizeGoal(goal)}): {candidates.Count} candidates, step {hints.ClockStepMhz} MHz", 0.5);
+            double refThr = 0;
+            var walk = await ClockSearch.WalkAsync(
+                goal,
+                candidates,
+                async c =>
                 {
-                    var res = await ApplyAndTest($"eff-{c}MHz@{dailyVolt}mV", BaseAt(dailyVolt, c, stockVram), 0.55);
-                    if (res.Ok) lastGoodClock = c;
-                }
-            }
-            else
-            {
-                foreach (var c in candidates)
-                {
-                    var res = await ApplyAndTest($"oc-{c}MHz@{dailyVolt}mV", BaseAt(dailyVolt, c, stockVram), 0.55);
-                    if (!res.Ok) break;
-                    lastGoodClock = c;
-                }
-            }
+                    var res = await ApplyAndTest(
+                        $"{(TuneScore.NormalizeGoal(goal) == "efficiency" ? "eff" : "oc")}-{c}MHz@{dailyVolt}mV",
+                        BaseAt(dailyVolt, c, stockVram),
+                        0.55);
+                    if (!res.Ok)
+                        sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, FaultClassifier.ClassifyReason(res.Reason) });
+                    double thr = res.Throughput;
+                    if (refThr <= 0 && res.Ok && thr > 0) refThr = thr;
+                    double? power = Metric(res.Metrics, "board_power_w", "power_w");
+                    double? temp = Metric(res.Metrics, "hotspot_c", "gpu_temp_c");
+                    return (res.Ok, thr, power, temp, res.Ok ? null : res.Reason);
+                },
+                hints,
+                refThr);
+            if (walk.BestMhz is int best)
+                lastGoodClock = best;
+            else if (walk.LastStableMhz is int stable)
+                lastGoodClock = stable;
+            if (walk.LastFault != FaultKind.None)
+                sessionFault = FaultClassifier.MostSevere(new[] { sessionFault, walk.LastFault });
+            Log(
+                $"Clock search: {walk.Evaluated.Count} probes, best {lastGoodClock} MHz"
+                + (walk.LastFault != FaultKind.None ? $" (fault {walk.LastFault})" : "")
+                + ".",
+                0.65);
             state.LastGoodClock = lastGoodClock;
             await Complete("clock");
         }
@@ -608,6 +646,18 @@ public sealed class AutotuneService
         var path = Path.Combine(profiles, $"gpu-{goal}.json");
         await File.WriteAllTextAsync(path, profile.ToJson(), ct);
         await File.WriteAllTextAsync(StartupProfilePath, profile.ToJson(), ct);
+        SaveMachineMemory(new MachineTuneMemory
+        {
+            Goal = goal,
+            StockVoltMv = stockVolt,
+            StockClockMhz = stockClock,
+            StockVramMhz = stockVram,
+            DailyVoltageMv = dailyVolt,
+            FailVoltageMv = foundFailMv,
+            LastGoodClockMhz = lastGoodClock,
+            LastGoodVramMhz = lastGoodVram,
+            LastFaultKind = sessionFault == FaultKind.None ? null : sessionFault.ToString(),
+        });
         ClearProgress();
         Log($"Saved {path}", 1, null, "final-soak", true);
         return new Dictionary<string, object?>
@@ -642,6 +692,11 @@ public sealed class AutotuneService
         if (!applied.SessionApplied || !applied.CoWritten)
             throw new HwException(applied.Error ?? "PBO session apply failed (per-core Curve Optimizer not written)");
 
+        var mem = MachineTuneMemory.Load(MachineMemoryPath);
+        IReadOnlyList<int>? priorCo = mem.CoMagnitudes is { Count: > 0 } mags ? mags : null;
+        var coHints = AdaptiveSearch.FromFault(mem.LastFault, AdaptiveSearch.Defaults());
+        FaultKind coFault = mem.LastFault;
+
         var current = new int[n];
         int probesDone = 0;
         var detailed = await CurveOptimizerSearch.SearchDetailedAsync(
@@ -662,16 +717,22 @@ public sealed class AutotuneService
                     0.05 + 0.7 * (core / (double)n),
                     null, $"co-{core}", null));
                 var stress = await StressAsync("cpu", Math.Max(8, seconds), limits, progress, ct, "core", core);
+                if (!stress.Ok)
+                    coFault = FaultClassifier.MostSevere(new[] { coFault, FaultClassifier.ClassifyReason(stress.Reason) });
                 if (stress.Ok) current[core] = signedOffset;
                 return stress.Ok;
             },
-            seed.PptWatts, seed.TdcAmps, seed.EdcAmps, seed.BoostOverrideMhz, seed.Scalar);
+            seed.PptWatts, seed.TdcAmps, seed.EdcAmps, seed.BoostOverrideMhz, seed.Scalar,
+            step: coHints.CoStep,
+            maxMagnitude: coHints.CoMaxMagnitude,
+            priorMagnitudes: priorCo);
 
         var profile = detailed.Profile;
         progress?.Report(new TuneProgress(
             $"Per-core search done ({detailed.ProbeCount} probes). All-core confirmation…",
             0.78, null, "co-confirm", null));
 
+        coHints = AdaptiveSearch.FromFault(coFault, coHints);
         profile = await CurveOptimizerSearch.ConfirmAllCoresAsync(
             profile,
             async offsets =>
@@ -686,13 +747,25 @@ public sealed class AutotuneService
                     "All-core Curve Optimizer soak…",
                     0.85, null, "co-all", null));
                 var stress = await StressAsync("cpu", Math.Max(12, seconds), limits, progress, ct, "all");
+                if (!stress.Ok)
+                    coFault = FaultClassifier.MostSevere(new[] { coFault, FaultClassifier.ClassifyReason(stress.Reason) });
                 return stress.Ok;
-            });
+            },
+            step: coHints.CoStep,
+            backoffSteps: coHints.ConfirmBackoffSteps);
 
         var final = smu.Apply(profile, PersistMode.Session);
         if (!final.SessionApplied || !final.CoWritten)
             throw new HwException(final.Error ?? "Final per-core Curve Optimizer apply failed");
         SaveCpuPboProfile(profile);
+        try
+        {
+            var merged = MachineTuneMemory.Load(MachineMemoryPath);
+            merged.CoMagnitudes = profile.Cores.OrderBy(c => c.Core).Select(c => c.Magnitude).ToList();
+            if (coFault != FaultKind.None) merged.RememberFault(coFault);
+            merged.Save(MachineMemoryPath);
+        }
+        catch { /* memory is best-effort */ }
         progress?.Report(new TuneProgress("Per-core Curve Optimizer search finished.", 1, null, "co-done", true));
         return profile;
     }
@@ -717,6 +790,28 @@ public sealed class AutotuneService
             CreateNoWindow = true,
             UseShellExecute = false,
         })?.WaitForExit(8000);
+    }
+
+    static double? Metric(IReadOnlyDictionary<string, double?> metrics, params string[] keys)
+    {
+        foreach (var k in keys)
+        {
+            if (metrics.TryGetValue(k, out var v) && v is double d && !double.IsNaN(d) && !double.IsInfinity(d))
+                return d;
+        }
+        return null;
+    }
+
+    void SaveMachineMemory(MachineTuneMemory mem)
+    {
+        try
+        {
+            var existing = MachineTuneMemory.Load(MachineMemoryPath);
+            if (existing.CoMagnitudes is { Count: > 0 } && mem.CoMagnitudes is null)
+                mem.CoMagnitudes = existing.CoMagnitudes;
+            mem.Save(MachineMemoryPath);
+        }
+        catch { /* best-effort */ }
     }
 
     AutotuneProgressFile? LoadProgress()

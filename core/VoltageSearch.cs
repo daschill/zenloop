@@ -204,7 +204,33 @@ public static class VoltageSearch
         return new VoltageSearchResult(minPass, maxFail, daily, evaluated, UsedLinearFallback: true);
     }
 
-    /// <summary>Fail at a higher mV than a known pass violates undervolt monotonicity.</summary>
+    /// <summary>Widen daily margin after hard faults; keep default otherwise.</summary>
+    public static int MarginForFault(FaultKind kind, int baseMarginMv = DefaultMarginMv)
+    {
+        if (baseMarginMv <= 0) baseMarginMv = DefaultMarginMv;
+        return kind switch
+        {
+            FaultKind.Tdr or FaultKind.Whea => Math.Max(baseMarginMv, 25),
+            FaultKind.Thermal => Math.Max(baseMarginMv, 20),
+            _ => baseMarginMv,
+        };
+    }
+
+    /// <summary>
+    /// Narrow the search floor using machine memory so binary search converges faster
+    /// without going below a previously observed fail cliff (minus a small cushion).
+    /// </summary>
+    public static int SearchFloorFromMemory(int legalMin, int stepMv, int? priorDailyMv, int? priorFailMv)
+    {
+        if (stepMv < 1) stepMv = DefaultStepMv;
+        if (priorFailMv is int fail)
+            return Math.Max(legalMin, fail - stepMv);
+        if (priorDailyMv is int daily)
+            return Math.Max(legalMin, daily - stepMv * 4);
+        return legalMin;
+    }
+
+        /// <summary>Fail at a higher mV than a known pass violates undervolt monotonicity.</summary>
     static bool IsNonMonotonic(Dictionary<int, bool> outcomes)
     {
         foreach (var (vPass, ok) in outcomes)
