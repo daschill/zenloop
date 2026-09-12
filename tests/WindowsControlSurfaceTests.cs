@@ -19,11 +19,13 @@ public class WindowsControlSurfaceTests
         Assert.True(caps.BiosStockWrite);
         Assert.False(caps.BoostOverride);
         Assert.False(caps.ManualAllCoreOc);
+        Assert.False(caps.CurveShaper);
         Assert.True(caps.GpuManual);
         Assert.True(caps.GpuFan);
         Assert.False(caps.GpuBiosPersist);
         Assert.Contains(caps.Limitations, l => l.Contains("boost", StringComparison.OrdinalIgnoreCase));
         Assert.Contains("boost=False", caps.StatusLine(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CS=False", caps.StatusLine(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

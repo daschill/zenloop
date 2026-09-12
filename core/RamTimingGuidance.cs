@@ -10,20 +10,63 @@ public static class RamTimingGuidance
     {
         ArgumentNullException.ThrowIfNull(p);
         var expo = p.Expo ? "EXPO on" : "EXPO off";
-        return $"DDR5-{p.DataRateMts}  {p.Tcl}-{p.Trcd}-{p.Trp}-{p.Tras}  tRFC {p.Trfc}  VDDIO {p.VddioMv} mV  ({expo})";
+        var clocks = FormatFabricClocks(p);
+        var head =
+            $"DDR5-{p.DataRateMts}  {p.Tcl}-{p.Trcd}-{p.Trp}-{p.Tras}  tRFC {p.Trfc}  VDDIO {p.VddioMv} mV  ({expo})";
+        return string.IsNullOrEmpty(clocks) ? head : head + "  " + clocks;
     }
+
+    /// <summary>Multi-line primary block for UI / confirm dialogs.</summary>
+    public static string FormatDetailBlock(RamTimingProfile p)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        var lines = new List<string>
+        {
+            $"Data rate: DDR5-{p.DataRateMts} (mem clock {p.MemClockMhz} MHz)",
+            $"Primaries: {p.Tcl}-{p.Trcd}-{p.Trp}-{p.Tras}  tRFC {p.Trfc}",
+            $"VDDIO: {p.VddioMv} mV",
+            p.Expo ? "EXPO: on (prefer stock kit profile before manual tighten)" : "EXPO: off (manual primaries)",
+        };
+        if (p.FclkMhz is int f) lines.Add($"FCLK: {f} MHz");
+        if (p.UclkMhz is int u) lines.Add($"UCLK: {u} MHz");
+        if (p.MclkMhz is int m) lines.Add($"MCLK: {m} MHz");
+        else lines.Add($"MCLK: {p.MemClockMhz} MHz (from mem clock)");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    public static string FormatFabricClocks(RamTimingProfile p)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        var bits = new List<string>();
+        if (p.FclkMhz is int f) bits.Add($"FCLK {f}");
+        if (p.UclkMhz is int u) bits.Add($"UCLK {u}");
+        if (p.MclkMhz is int m) bits.Add($"MCLK {m}");
+        return bits.Count == 0 ? "" : string.Join(" / ", bits);
+    }
+
+    /// <summary>EXPO-first steps — guidance only, not a fake DDR5 calculator table.</summary>
+    public static IReadOnlyList<string> ExpoFirstSteps() =>
+    [
+        "1. Enable motherboard EXPO/DOCP for your kit and boot Windows stable.",
+        "2. Read live primaries here (and verify in ZenTimings) before changing anything.",
+        "3. If tightening: change one primary at a time (usually tCL, then tRCD/tRP, then tRAS/tRFC).",
+        "4. Write RAM BIOS → reboot → stress (memory + CPU) before the next step.",
+        "5. If POST fails: CLR_CMOS / Optimized Defaults, then return to the last known-good EXPO profile.",
+    ];
 
     public static string Guidance(RamTimingProfile? current = null)
     {
         var head = current is null
             ? "RAM: read live timings, then write BIOS only after confirm + reboot."
-            : "RAM now: " + FormatPrimaryLine(current);
+            : "RAM now:" + Environment.NewLine + FormatDetailBlock(current);
 
-        return head + Environment.NewLine +
-               "Start from motherboard EXPO/DOCP, then tighten primary timings slowly. " +
-               "ZenLoop writes primary CL/tRCD/tRP/tRAS/tRFC + VDDIO via Ryzen Master — not a full secondary/tertiary suite. " +
-               "Use ZenTimings to verify what firmware actually applied after reboot. " +
-               "Aggressive DDR5 voltage/timing can fail POST; keep CLR_CMOS ready.";
+        return head + Environment.NewLine + Environment.NewLine
+               + "EXPO-first (recommended):" + Environment.NewLine
+               + string.Join(Environment.NewLine, ExpoFirstSteps()) + Environment.NewLine + Environment.NewLine
+               + "ZenLoop writes primary CL/tRCD/tRP/tRAS/tRFC + VDDIO via Ryzen Master — not a full secondary/tertiary suite, "
+               + "and not a fabricated DDR5 “safe table”. "
+               + "FCLK/UCLK/MCLK show when Ryzen Master reports them; otherwise leave fabric sync to BIOS. "
+               + "Use ZenTimings after reboot. Aggressive DDR5 voltage/timing can fail POST — keep CLR_CMOS ready.";
     }
 
     /// <summary>Soft sanity checks for UI warnings (not hard blocks — BIOS still confirms).</summary>
@@ -33,14 +76,24 @@ public static class RamTimingGuidance
         var warns = new List<string>();
         if (p.MemClockMhz < 2000 || p.MemClockMhz > 4000)
             warns.Add($"Mem clock {p.MemClockMhz} MHz (DDR5-{p.DataRateMts}) is outside the usual desktop EXPO range — double-check.");
+        if (!p.Expo && p.MemClockMhz >= 3200)
+            warns.Add("EXPO is off with a high mem clock — start from the kit EXPO profile unless you already validated these primaries.");
         if (p.VddioMv < 1000 || p.VddioMv > 1450)
             warns.Add($"VDDIO {p.VddioMv} mV looks unusual for DDR5 daily use.");
+        if (p.VddioMv > 1350)
+            warns.Add($"VDDIO {p.VddioMv} mV is aggressive for daily DDR5 — watch thermals and IMC stability.");
         if (p.Tcl < 20 || p.Tcl > 56)
             warns.Add($"tCL {p.Tcl} is outside a common daily-driver band.");
+        if (p.Trcd != p.Trp)
+            warns.Add($"tRCD ({p.Trcd}) ≠ tRP ({p.Trp}) — common on some kits, but confirm this matches your EXPO readout.");
         if (p.Tras < p.Tcl + p.Trcd)
             warns.Add("tRAS is lower than tCL+tRCD — many kits need tRAS ≥ tCL+tRCD.");
         if (p.Trfc < 200 || p.Trfc > 1200)
             warns.Add($"tRFC {p.Trfc} looks unusual; verify against your kit/AGESA.");
+        if (p.FclkMhz is int fclk && (fclk < 800 || fclk > 2200))
+            warns.Add($"FCLK {fclk} MHz looks unusual for AM5 daily use.");
+        if (p.FclkMhz is int f && p.MclkMhz is int m && Math.Abs(f - m) > 50 && Math.Abs(f * 2 - m) > 50)
+            warns.Add($"FCLK {f} and MCLK {m} are far apart — 1:1 sync is the usual daily target; desync needs extra validation.");
         return warns;
     }
 }

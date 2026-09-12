@@ -109,6 +109,23 @@ public sealed class SmuService
         };
     }
 
+    public ApplyResult ApplyCurveShaper(CurveShaperProfile profile, bool available)
+    {
+        if (_backend is AmdRyzenMasterBackend amd)
+            return amd.ApplyCurveShaper(profile, available);
+        return new ApplyResult
+        {
+            SessionApplied = false,
+            BiosPersisted = false,
+            Backend = BackendName,
+            Error = CurveShaperSupport.UnavailableReason,
+            Note = CurveShaperSupport.BiosNote,
+        };
+    }
+
+    public CurveShaperProfile? ReadCurveShaper(bool available)
+        => _backend is AmdRyzenMasterBackend amd ? amd.ReadCurveShaper(available) : null;
+
     /// <summary>Production: AMD-signed Ryzen Master path. Tests construct with <see cref="LoopbackSmuBackend"/>.</summary>
     public static SmuService CreateProduction()
     {

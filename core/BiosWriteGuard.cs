@@ -27,6 +27,8 @@ public static class BiosWriteGuard
         "PBO boost override (+MHz) cannot be applied from Windows: AMD Platform.dll has no C export for it "
         + "(GetCurrentFMaxCPU is read-only). The slider is display-only.";
 
+    public const string CurveShaperUnavailableNote = CurveShaperSupport.UnavailableReason;
+
     /// <summary>Refuse BIOS-mode apply when the process is not elevated and elevation is not allowed.</summary>
     public static ApplyResult? RefuseIfCannotPersistBios(PersistMode persist, bool isAdministrator, bool allowElevate)
     {

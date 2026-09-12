@@ -38,6 +38,10 @@ public sealed class ProfilePack
     [JsonPropertyName("ram")]
     public RamTimingProfile? Ram { get; set; }
 
+    /// <summary>Optional Curve Shaper bands — only when RM exposes a real C API (otherwise omit / null).</summary>
+    [JsonPropertyName("curve_shaper")]
+    public CurveShaperProfile? CurveShaper { get; set; }
+
     static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -56,8 +60,8 @@ public sealed class ProfilePack
         if (pack.Schema > SchemaVersion)
             throw new InvalidOperationException(
                 $"Profile pack schema {pack.Schema} is newer than this ZenLoop ({SchemaVersion}). Update the app.");
-        if (pack.Gpu is null && pack.Cpu is null && pack.Ram is null)
-            throw new InvalidOperationException("Profile pack has no gpu, cpu, or ram section.");
+        if (pack.Gpu is null && pack.Cpu is null && pack.Ram is null && pack.CurveShaper is null)
+            throw new InvalidOperationException("Profile pack has no gpu, cpu, ram, or curve_shaper section.");
         return pack;
     }
 
@@ -79,7 +83,8 @@ public sealed class ProfilePack
         CpuPboProfile? cpu,
         RamTimingProfile? ram,
         string? goal = null,
-        string? notes = null)
+        string? notes = null,
+        CurveShaperProfile? curveShaper = null)
     {
         return new ProfilePack
         {
@@ -92,6 +97,7 @@ public sealed class ProfilePack
             Gpu = gpu,
             Cpu = cpu?.Clone(),
             Ram = ram?.Clone(),
+            CurveShaper = curveShaper?.Clone(),
         };
     }
 
@@ -109,6 +115,8 @@ public sealed class ProfilePack
         }
         if (Ram is not null)
             bits.Add($"RAM DDR5-{Ram.DataRateMts} {Ram.Tcl}-{Ram.Trcd}-{Ram.Trp}-{Ram.Tras}");
+        if (CurveShaper is { Bands.Count: > 0 })
+            bits.Add($"CS×{CurveShaper.Bands.Count}");
         return bits.Count == 0 ? "empty pack" : string.Join(" · ", bits);
     }
 }
