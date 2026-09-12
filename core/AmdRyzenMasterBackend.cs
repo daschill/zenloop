@@ -10,11 +10,13 @@ namespace ZenLoop.Core;
 public sealed class AmdRyzenMasterBackend : ISmuBackend
 {
     readonly Func<IReadOnlyList<string>, string> _run;
+    readonly bool _allowElevate;
 
-    public AmdRyzenMasterBackend(Func<IReadOnlyList<string>, string> run, string? helperPath = null)
+    public AmdRyzenMasterBackend(Func<IReadOnlyList<string>, string> run, string? helperPath = null, bool allowElevate = true)
     {
         _run = run ?? throw new ArgumentNullException(nameof(run));
         HelperPath = helperPath;
+        _allowElevate = allowElevate;
     }
 
     public string Name => "amd-ryzen-master";
@@ -27,30 +29,43 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
         if (path is null) return null;
         // Parent app already elevated → child helper inherits the token; skip a second UAC.
         bool elevate = !WindowsElevation.IsAdministrator();
-        return new AmdRyzenMasterBackend(args => RunHelper(path, args, allowElevate: elevate), path);
+        return new AmdRyzenMasterBackend(
+            args => RunHelper(path, args, allowElevate: elevate),
+            path,
+            allowElevate: elevate);
     }
 
     public ApplyResult Apply(CpuPboProfile profile, PersistMode persist)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        // Guard only when elevation is explicitly disabled; otherwise helper may UAC.
+        if (persist == PersistMode.Bios && !_allowElevate && !WindowsElevation.IsAdministrator())
+        {
+            var refused = BiosWriteGuard.RefuseIfCannotPersistBios(persist, false, false);
+            if (refused is not null)
+                return refused;
+        }
         try
         {
             var json = _run(CpuSmuProtocol.ApplyArgs(profile, persist));
             var result = CpuSmuProtocol.ParseApply(json);
             if (string.IsNullOrEmpty(result.Backend))
                 result.Backend = Name;
-            return result;
+            return BiosWriteGuard.EnsureNoSilentBiosSuccess(result, persist);
         }
         catch (Exception ex)
         {
+            var msg = persist == PersistMode.Bios
+                ? $"BIOS persist failed: {ex.Message}"
+                : ex.Message;
+            if (AmdPrerequisites.LooksLikeMissingRyzenMaster(msg))
+                msg = AmdPrerequisites.FormatHelperError(msg);
             return new ApplyResult
             {
                 SessionApplied = false,
                 BiosPersisted = false,
                 Backend = Name,
-                Error = persist == PersistMode.Bios
-                    ? $"BIOS persist failed: {ex.Message}"
-                    : ex.Message,
+                Error = msg,
             };
         }
     }
@@ -79,21 +94,36 @@ public sealed class AmdRyzenMasterBackend : ISmuBackend
     public ApplyResult ApplyRam(RamTimingProfile profile)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        try
-        {
-            var json = _run(RamTimingProtocol.ApplyArgs(profile));
-            var r = RamTimingProtocol.ParseApply(json);
-            if (string.IsNullOrEmpty(r.Backend)) r.Backend = Name;
-            return r;
-        }
-        catch (Exception ex)
+        if (!_allowElevate && !WindowsElevation.IsAdministrator())
         {
             return new ApplyResult
             {
                 SessionApplied = false,
                 BiosPersisted = false,
+                CoWritten = false,
+                Backend = "refused",
+                Error = "RAM BIOS write refused: not running as Administrator and elevation is disabled. "
+                    + "Relaunch ZenLoop, approve UAC, then write RAM timings again.",
+            };
+        }
+        try
+        {
+            var json = _run(RamTimingProtocol.ApplyArgs(profile));
+            var r = RamTimingProtocol.ParseApply(json);
+            if (string.IsNullOrEmpty(r.Backend)) r.Backend = Name;
+            return BiosWriteGuard.EnsureNoSilentBiosSuccess(r, PersistMode.Bios);
+        }
+        catch (Exception ex)
+        {
+            var msg = "RAM BIOS apply failed: " + ex.Message;
+            if (AmdPrerequisites.LooksLikeMissingRyzenMaster(msg))
+                msg = AmdPrerequisites.FormatHelperError(msg);
+            return new ApplyResult
+            {
+                SessionApplied = false,
+                BiosPersisted = false,
                 Backend = Name,
-                Error = "RAM BIOS apply failed: " + ex.Message,
+                Error = msg,
             };
         }
     }

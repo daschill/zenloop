@@ -8,7 +8,20 @@ public static class WindowsElevation
 
     public static bool IsAdministrator()
     {
-        using var id = WindowsIdentity.GetCurrent();
-        return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+        if (!OperatingSystem.IsWindows())
+            return false;
+        try
+        {
+            using var id = WindowsIdentity.GetCurrent();
+            return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 }

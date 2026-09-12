@@ -114,7 +114,7 @@ static IADLXGPUPtr PickGpu(IADLXGPUListPtr gpus, int requested) {
 
 static GpuCtx InitGpu(int requestedIndex) {
     ADLX_RESULT r = g_adlx.Initialize();
-    if (!Ok(r)) Fail("ADLX initialize failed. Is AMD Software (Adrenalin) installed?");
+    if (!Ok(r)) Fail("ADLX initialize failed. Install AMD Software (Adrenalin Edition) so amdadlx64.dll is available, then reboot and retry.");
     GpuCtx c;
     IADLXSystem* sys = g_adlx.GetSystemServices();
     if (!sys) Fail("ADLX system services unavailable");

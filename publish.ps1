@@ -38,7 +38,7 @@ Double-click ZenLoop.exe. Approve Administrator once (UAC).
 
 Click **Optimize this PC**. The app restores stock GPU, benchmarks, undervolts/overclocks the GPU, tunes per-core Curve Optimizer, benchmarks again, and shows faster / cooler / less power.
 
-Needs AMD Software (Adrenalin) for the GPU. Needs AMD Ryzen Master installed for CPU/BIOS (same signed driver ClockTuner/Hydra use). No HWiNFO, Python, or extra downloads.
+Needs AMD Software (Adrenalin) for the GPU. Needs AMD Ryzen Master installed for CPU/BIOS (same signed driver ClockTuner/Hydra use). No HWiNFO or Python required — the supported product is ZenLoop.exe (WPF).
 "@
 Set-Content -Path (Join-Path $out "README.txt") -Value $readme -Encoding UTF8
 

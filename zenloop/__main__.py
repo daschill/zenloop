@@ -11,10 +11,19 @@ from . import __version__, autotune, hw, hwinfo, safety
 
 
 BANNER = """
-ZenLoop  —  stress tester + auto OC/UV for this 9800X3D / 7900 XTX
-GPU clocks and voltage are applied live through AMD ADLX (same path as Adrenalin).
-CPU Curve Optimizer still has to be set in BIOS / Ryzen Master; this tool tests it.
+ZenLoop Python CLI — DEPRECATED
+================================
+Supported product path: the C# WPF app (ZenLoop.exe). Publish with publish.ps1
+or launch ZenLoop-UI.cmd. This module remains only for legacy debugging of the
+same native helpers (zenloop-hw.exe / zenloop-cpu.exe under zenloop/bin/).
+
+Do not use this CLI for daily tuning; safety/search limits may drift from the app.
 """.strip()
+
+
+def _print_deprecation() -> None:
+    print(BANNER, file=sys.stderr)
+    print(file=sys.stderr)
 
 
 def _print_info(data: dict) -> None:
@@ -54,6 +63,7 @@ def _print_info(data: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _print_deprecation()
     parser = argparse.ArgumentParser(description=BANNER, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"zenloop {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -99,11 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     p_apply = sub.add_parser("apply", help="Apply a saved profiles/*.json")
     p_apply.add_argument("path")
 
-    sub.add_parser("ui", help="Launch the Windows desktop app")
+    sub.add_parser("ui", help="Launch the Windows desktop app (preferred)")
 
     args = parser.parse_args(argv)
-    print(BANNER)
-    print()
 
     try:
         if args.cmd in ("info", "metrics"):
@@ -195,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             if not exe.exists():
                 print("Building UI…")
                 subprocess.check_call(
-                    ["dotnet", "build", str(root / "app" / "ZenLoop.App.csproj"), "-c", "Release"],
+                    ["dotnet", "build", str(root / "ZenLoop.sln"), "-c", "Release"],
                 )
             os.startfile(exe)  # type: ignore[attr-defined]
             return 0

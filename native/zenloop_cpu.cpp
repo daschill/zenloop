@@ -163,7 +163,7 @@ static bool EnsureDriver(std::string* status) {
     }
     if (!svc) {
         CloseServiceHandle(scm);
-        *status = "AMDRyzenMasterDriverV27 not installed";
+        *status = "AMDRyzenMasterDriver not installed — install AMD Ryzen Master";
         return false;
     }
     SERVICE_STATUS_PROCESS ssp{};
@@ -193,13 +193,13 @@ static bool EnsureDriver(std::string* status) {
 static PlatformApi LoadApis() {
     auto bin = RmBinDir();
     if (GetFileAttributesW((bin + L"\\Platform.dll").c_str()) == INVALID_FILE_ATTRIBUTES)
-        Fail("Ryzen Master Platform.dll not found");
+        Fail("Ryzen Master Platform.dll not found. Install AMD Ryzen Master from amd.com, then reboot.");
     SetDllDirectoryW(bin.c_str());
     PlatformApi a;
     a.device = LoadLibraryW((bin + L"\\Device.dll").c_str());
     a.platform = LoadLibraryW((bin + L"\\Platform.dll").c_str());
-    if (!a.platform) Fail("LoadLibrary Platform.dll failed");
-    if (!a.device) Fail("LoadLibrary Device.dll failed");
+    if (!a.platform) Fail("LoadLibrary Platform.dll failed. Reinstall AMD Ryzen Master.");
+    if (!a.device) Fail("LoadLibrary Device.dll failed. Reinstall AMD Ryzen Master.");
     a.IsSupportedProcessor = reinterpret_cast<Fn_IsSupportedProcessor>(Must(a.platform, "IsSupportedProcessor"));
     a.GetPlatform = reinterpret_cast<Fn_GetPlatform>(Must(a.platform, "GetPlatform"));
     a.GetRmCpuParameters = reinterpret_cast<Fn_GetRmCpuParameters>(Must(a.platform, "GetRmCpuParameters"));
