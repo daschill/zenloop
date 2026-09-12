@@ -45,9 +45,24 @@ public sealed class HwClient
 
     public HwClient()
     {
-        _exe = FindHelper() ?? throw new HwException(
-            "zenloop-hw.exe is missing from the ZenLoop folder. Re-download the app.");
+        var prereq = AmdPrerequisites.Probe();
+        _exe = FindHelper();
+        if (_exe is null)
+        {
+            throw new HwException(
+                "zenloop-hw.exe is missing from the ZenLoop folder. Re-download or run publish.ps1."
+                + (prereq.AdrenalinPresent ? "" : Environment.NewLine + Environment.NewLine + prereq.UserGuidance()));
+        }
+        if (!prereq.AdrenalinPresent)
+        {
+            // Still construct so the UI can open; Info()/commands surface the guidance.
+            // Callers should prefer Probe() before stressing the GPU.
+        }
     }
+
+    /// <summary>User-facing guidance when ADLX/Adrenalin is missing.</summary>
+    public static string MissingAdrenalinMessage()
+        => AmdPrerequisites.Probe().UserGuidance();
 
     public string HelperPath => _exe;
 
@@ -159,10 +174,15 @@ public sealed class HwClient
         try { el = JsonDocument.Parse(last).RootElement.Clone(); }
         catch (JsonException)
         {
-            throw new HwException($"helper returned non-JSON: {Trim(stdout + stderr)}");
+            var raw = Trim(stdout + stderr);
+            throw new HwException(AmdPrerequisites.FormatHelperError(
+                string.IsNullOrEmpty(raw) ? "zenloop-hw.exe returned no JSON (ADLX/Adrenalin may be missing)." : $"helper returned non-JSON: {raw}"));
         }
         if (proc.ExitCode is not 0 and not 3 && !Bool(el, "ok"))
-            throw new HwException(Str(el, "error") ?? $"helper exit {proc.ExitCode}");
+        {
+            var err = Str(el, "error") ?? $"helper exit {proc.ExitCode}";
+            throw new HwException(AmdPrerequisites.FormatHelperError(err));
+        }
         return el;
     }
 

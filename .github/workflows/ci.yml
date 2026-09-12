@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build + Core unit tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore ZenLoop.sln
+
+      - name: Build solution
+        run: dotnet build ZenLoop.sln -c Release --no-restore
+
+      - name: Run Core unit tests (skip live hardware)
+        run: >
+          dotnet test tests/ZenLoop.Tests.csproj
+          -c Release
+          --no-build
+          --filter "Category!=LiveHardware"
+          --logger "trx;LogFileName=zenloop-tests.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+          if-no-files-found: ignore
+
+  # Native ADLX / Ryzen Master helpers and live stress need a Windows AMD PC.
+  # They are intentionally not built or executed on CI runners.
+  note-live-hardware:
+    name: Live hardware tests (gated)
+    runs-on: windows-latest
+    needs: build-and-test
+    steps:
+      - name: Skip live hardware
+        run: |
+          Write-Host "LiveHardware tests (ADLX / Ryzen Master / stress) are skipped in CI."
+          Write-Host "Run them manually on a Windows AMD machine with Adrenalin + Ryzen Master installed."
+          Write-Host "Filter: --filter Category=LiveHardware"

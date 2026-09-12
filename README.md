@@ -2,9 +2,24 @@
 
 Windows app that auto undervolts and overclocks **AMD Ryzen + Radeon**, then shows how much **faster, cooler, and less power** the tune uses.
 
-Download, double-click `ZenLoop.exe`, approve Administrator once, click **Optimize this PC**. No HWiNFO, Python, or extra tuners.
+**Supported entry:** `ZenLoop.exe` (C# WPF). Publish with `publish.ps1`, or use `ZenLoop-UI.cmd` from a build tree. The Python CLI (`zenloop.cmd` / `python -m zenloop`) is **deprecated** and kept only for legacy helper debugging — do not use it as the daily product path.
 
-Reference hardware:
+Download, double-click `ZenLoop.exe`, approve Administrator once, click **Optimize this PC**. No HWiNFO, Python, or extra tuners required for the WPF flow.
+
+## Requirements (Windows AMD PC)
+
+ZenLoop does **not** run on Linux. On the target PC you need:
+
+| Dependency | Why |
+| --- | --- |
+| **Windows 10/11 x64** | WPF app + ADLX / Ryzen Master helpers |
+| **AMD Software (Adrenalin)** | GPU clocks/voltage via ADLX (`amdadlx64.dll`) |
+| **AMD Ryzen Master** | CPU PBO / Curve Optimizer / RAM BIOS mailbox (`Platform.dll` + signed driver) |
+| **Administrator (UAC)** | SMU and BIOS writes |
+
+If Adrenalin or Ryzen Master is missing, the app detects that and shows install guidance instead of crashing with an opaque helper error.
+
+Reference hardware (search bounds / docs assume this class of parts):
 
 - CPU: Ryzen 7 9800X3D
 - GPU: Radeon RX 7900 XTX
@@ -12,7 +27,7 @@ Reference hardware:
 
 GPU clocks, voltage, VRAM, and power limit are applied live through AMD ADLX (the same API Adrenalin uses). The search steps voltage down and clocks up, stress-tests each step, and backs off on crash, driver timeout, WHEA, or thermal abort.
 
-CPU **Precision Boost Overdrive**, **per-core Curve Optimizer**, and **RAM timings** are written from Windows through AMD’s signed Ryzen Master BIOS mailbox. **Write to BIOS** needs Administrator. Reboot after a successful write. This is not Gigabyte boot-order control.
+CPU **Precision Boost Overdrive**, **per-core Curve Optimizer**, and **RAM timings** are written from Windows through AMD’s signed Ryzen Master BIOS mailbox. **Write to BIOS** needs Administrator and an explicit confirmation; ZenLoop refuses silent BIOS success. Reboot after a successful write. This is not Gigabyte boot-order control.
 
 Not affiliated with AMD. Overclocking and undervolting can crash the system; use at your own risk.
 
@@ -26,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File .\publish.ps1
 
 Then copy `dist\ZenLoop\` anywhere and double-click `ZenLoop.exe`. One UAC at launch. Click **Optimize this PC**.
 
-Needs **AMD Software (Adrenalin)** for the GPU and **AMD Ryzen Master** so the signed `AMDRyzenMasterDriver` can read PPT/temp and write PBO/CO. Profiles and benches save under `%LocalAppData%\ZenLoop` when you run the published folder.
+Profiles and benches save under `%LocalAppData%\ZenLoop` when you run the published folder.
 
 Daily-driver shortcut from a build tree: `ZenLoop-UI.cmd` or `app\bin\Release\net10.0-windows\ZenLoop.exe`.
 
@@ -55,15 +70,21 @@ Tuner-grade comparison is **score + temperature + watts**, not a clock number. T
 
 ## Build
 
-Needs Visual Studio 2022 with the C++ workload, .NET 10, and AMD Software.
+Needs Visual Studio 2022 with the C++ workload, .NET 10, and AMD Software on a Windows machine.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\native\build.ps1
-dotnet test .\tests\ZenLoop.Tests.csproj -c Release
-dotnet build .\app\ZenLoop.App.csproj -c Release
+dotnet test .\ZenLoop.sln -c Release --filter "Category!=LiveHardware"
+dotnet build .\ZenLoop.sln -c Release
 ```
 
-`native\build.ps1` clones the AMD ADLX SDK into `vendor/ADLX` (not in this repo).
+Solution projects: `ZenLoop.App` (WPF), `ZenLoop.Core`, `ZenLoop.Tests`.
+
+`native\build.ps1` clones the AMD ADLX SDK into `vendor/ADLX` (not in this repo) and writes helpers to `zenloop\bin\` for the WPF app to copy — that layout is unchanged even though the Python CLI is deprecated.
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) restores/builds the solution on `windows-latest` and runs Core unit tests with `--filter Category!=LiveHardware`. Live ADLX / Ryzen Master stress is skipped on CI runners.
 
 ## Safety
 
@@ -72,7 +93,7 @@ dotnet build .\app\ZenLoop.App.csproj -c Release
 - Each failed step is treated as the edge; the daily profile is one step safer
 - Stop during GPU autotune restores factory tuning
 - CPU package temperature abort uses Ryzen Master telemetry when the app is Administrator
-- If BIOS persist is not available, ZenLoop reports that failure instead of pretending a text file is BIOS
+- BIOS / RAM writes require confirmation; if BIOS persist is not available, ZenLoop reports that failure instead of pretending a text file is BIOS
 
 ## Recover
 

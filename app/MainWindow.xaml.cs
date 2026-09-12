@@ -38,6 +38,14 @@ public partial class MainWindow : Window
         Log("Starting ADLX helper…");
         try
         {
+            var prereq = await Task.Run(AmdPrerequisites.Probe);
+            if (!prereq.AllReady)
+            {
+                Log(prereq.UserGuidance().Replace(Environment.NewLine, " | "));
+                MessageBox.Show(this, prereq.UserGuidance(), "ZenLoop — missing AMD software",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
             _hw = await Task.Run(() => new HwClient());
             _tune = new AutotuneService(_hw);
             _smu = SmuService.CreateProduction();
@@ -52,6 +60,10 @@ public partial class MainWindow : Window
                 Log("Running as Administrator — GPU ADLX and CPU/BIOS SMU share this token.");
             else
                 Log("Not Administrator. CPU/BIOS writes need elevation. Close and relaunch ZenLoop, then approve UAC.");
+            if (!prereq.AdrenalinPresent)
+                SetStatus("NO ADRENALIN", false);
+            else if (!prereq.RyzenMasterPresent)
+                SetStatus("NO RYZEN MASTER", false);
             await RefreshInfoAsync();
             await RefreshSmuAsync();
             TryLoadCpuProfileIntoUi();
@@ -68,13 +80,15 @@ public partial class MainWindow : Window
             }
             RefreshBenchText();
             _poll.Start();
-            SetStatus("LIVE", true);
+            if (prereq.AllReady)
+                SetStatus("LIVE", true);
         }
         catch (Exception ex)
         {
             SetStatus("NO HELPER", false);
-            Log("ERROR " + ex.Message);
-            MessageBox.Show(this, ex.Message, "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Error);
+            var msg = AmdPrerequisites.FormatHelperError(ex.Message);
+            Log("ERROR " + msg.Replace(Environment.NewLine, " | "));
+            MessageBox.Show(this, msg, "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -432,9 +446,11 @@ public partial class MainWindow : Window
     async void OnRamWrite(object sender, RoutedEventArgs e)
     {
         if (_smu is null) return;
+        if (!ConfirmDangerousWrite(BiosWriteGuard.RamBiosWarning, "Write RAM BIOS", requireAdmin: true))
+            return;
         var profile = UiRamProfile();
         if (MessageBox.Show(this,
-                $"Write RAM timings to AMD BIOS:\nDDR5-{profile.DataRateMts}  {profile.Tcl}-{profile.Trcd}-{profile.Trp}-{profile.Tras}  tRFC {profile.Trfc}\nVDDIO {profile.VddioMv} mV  EXPO={(profile.Expo ? "on" : "off")}\n\nApprove UAC if prompted. Reboot after a successful write.",
+                $"Confirm RAM values:\nDDR5-{profile.DataRateMts}  {profile.Tcl}-{profile.Trcd}-{profile.Trp}-{profile.Tras}  tRFC {profile.Trfc}\nVDDIO {profile.VddioMv} mV  EXPO={(profile.Expo ? "on" : "off")}",
                 "Write RAM BIOS",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
@@ -488,16 +504,33 @@ public partial class MainWindow : Window
         Log($"Loaded CPU PBO profile PPT {p.PptWatts} W  TDC {p.TdcAmps} A  EDC {p.EdcAmps} A  CO cores {p.Cores.Count}");
     }
 
-    async void OnPboApply(object sender, RoutedEventArgs e) => await ApplyPboAsync(PersistMode.Session);
+    async void OnPboApply(object sender, RoutedEventArgs e)
+    {
+        if (!ConfirmDangerousWrite(BiosWriteGuard.SessionWarning, "Apply session PBO / Curve Optimizer", requireAdmin: true))
+            return;
+        await ApplyPboAsync(PersistMode.Session);
+    }
 
     async void OnPboBios(object sender, RoutedEventArgs e)
     {
-        if (MessageBox.Show(this,
-                "Write Precision Boost Overdrive (PPT, TDC, EDC, scalar) and per-core Curve Optimizer into AMD BIOS from Windows.\n\nWindows will prompt for Administrator (UAC). This uses AMD’s signed Ryzen Master driver, not a fake BIOS file.\n\nReboot after a successful write so the board firmware keeps the values.",
-                "Write to BIOS",
-                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+        if (!ConfirmDangerousWrite(BiosWriteGuard.BiosWarning, "Write to BIOS", requireAdmin: true))
             return;
         await ApplyPboAsync(PersistMode.Bios);
+    }
+
+    bool ConfirmDangerousWrite(string warning, string title, bool requireAdmin)
+    {
+        if (requireAdmin && !WindowsElevation.IsAdministrator())
+        {
+            var again = MessageBox.Show(this,
+                warning + "\n\nYou are NOT running as Administrator. ZenLoop will prompt for UAC before any BIOS/SMU write. "
+                + "If you cancel UAC, the write is refused — nothing is applied silently.\n\nContinue?",
+                title,
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+            return again == MessageBoxResult.OK;
+        }
+        return MessageBox.Show(this, warning, title, MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+            == MessageBoxResult.OK;
     }
 
     async Task ApplyPboAsync(PersistMode persist)
@@ -539,10 +572,9 @@ public partial class MainWindow : Window
     async void OnPboTune(object sender, RoutedEventArgs e)
     {
         if (_tune is null || _smu is null) return;
-        if (MessageBox.Show(this,
-                "Auto-tune per-core Curve Optimizer: apply Precision Boost Overdrive limits, then search negative offsets per logical core with CPU stress.\n\nThis writes SMU via the AMD Ryzen Master driver. Close games first.",
-                "Auto-tune per-core Curve Optimizer",
-                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+        if (!ConfirmDangerousWrite(BiosWriteGuard.SessionWarning
+                + "\n\nAuto-tune will search negative Curve Optimizer offsets per logical core with CPU stress.",
+                "Auto-tune per-core Curve Optimizer", requireAdmin: true))
             return;
         var seed = UiProfile();
         var secs = Math.Max(8, (int)SldSeconds.Value / 2);

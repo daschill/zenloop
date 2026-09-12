@@ -76,7 +76,7 @@ public sealed class SmuService
     public ISmuBackend Backend => _backend;
 
     public ApplyResult Apply(CpuPboProfile profile, PersistMode persist)
-        => _backend.Apply(profile, persist);
+        => BiosWriteGuard.EnsureNoSilentBiosSuccess(_backend.Apply(profile, persist), persist);
 
     public CpuPboProfile? Read() => _backend.Read();
 
@@ -99,8 +99,13 @@ public sealed class SmuService
     /// <summary>Production: AMD-signed Ryzen Master path. Tests construct with <see cref="LoopbackSmuBackend"/>.</summary>
     public static SmuService CreateProduction()
     {
+        var prereq = AmdPrerequisites.Probe();
         ISmuBackend? amd = AmdRyzenMasterBackend.TryCreate();
-        return new SmuService(amd ?? new UnavailableSmuBackend(
-            "zenloop-cpu.exe or AMD Ryzen Master Platform.dll not found"));
+        if (amd is not null)
+            return new SmuService(amd);
+        var why = !prereq.RyzenMasterPresent
+            ? prereq.UserGuidance()
+            : "zenloop-cpu.exe not found next to ZenLoop.exe. Re-publish or run native\\build.ps1, then retry.";
+        return new SmuService(new UnavailableSmuBackend(why));
     }
 }
