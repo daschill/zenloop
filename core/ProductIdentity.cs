@@ -11,7 +11,7 @@ public static class ProductIdentity
     public const string NotAffiliated = "Not affiliated with Advanced Micro Devices, Inc. AMD, Ryzen, and Radeon are trademarks of Advanced Micro Devices, Inc.";
 
     /// <summary>Bump when EULA/disclaimer text that users must re-accept changes.</summary>
-    public const int EulaVersion = 1;
+    public const int EulaVersion = 2;
 
     public const string ShortDisclaimer =
         "Overclocking and undervolting can crash Windows, corrupt data, or damage hardware. " +
@@ -45,12 +45,13 @@ public static class ProductIdentity
     {
         return
             $"{Name} {Version}\n{Tagline}\n\n{Copyright}\n{NotAffiliated}\n\n" +
-            "GPU: AMD ADLX (Adrenalin).\nCPU/BIOS/RAM mailbox: AMD Ryzen Master Platform/Device.\n" +
+            "Primary: AMD ADLX (GPU) + Ryzen Master Platform/Device (CPU/BIOS/RAM).\n" +
+            "Multi-vendor: Intel/NVIDIA detect + capability matrix; Apply only via public signed APIs when available (e.g. NVAPI power policies on nvapi64.dll).\n" +
             "Curve Shaper: exhaustive Platform/Device probe; gated without invented bands (PBO/CO alternative).\n" +
             "DRAM lab: ZenTimings-class read/guidance + export (no fake DDR5 tables, no WinRing0).\n" +
             $"Metrics JSON: {MetricsSnapshotExport.DefaultPath}\n" +
             $"RTSS OSD: slot owner {RtssOsdBridge.OwnerId}; MMF {RtssOsdBridge.ZenLoopMapName}; text {RtssOsdBridge.DefaultOsdTextPath}\n" +
-            "No WinRing0. No Intel/NVIDIA hardware control in this release.\n\n" +
+            "No WinRing0. No raw SMU IOCTL. Never fake Apply success.\n\n" +
             ShortDisclaimer + "\n\n" +
             RecoverySummary;
     }
@@ -67,12 +68,12 @@ public static class ProductIdentity
     {
         var parts = new List<string>();
         if (LooksIntel(cpuVendor))
-            parts.Add("Intel CPUs are not controlled by ZenLoop (use Intel XTU / ThrottleStop or BIOS).");
+            parts.Add("Intel CPU detected: no public signed third-party undervolt API — Apply disabled (use Intel XTU / BIOS; never WinRing0).");
         if (LooksNvidia(gpuVendor))
-            parts.Add("NVIDIA GPUs are not controlled by ZenLoop (use NVIDIA App / Afterburner).");
+            parts.Add("NVIDIA GPU detected: capability matrix shows NVAPI power-limit Apply only when nvapi64.dll policies resolve; voltage curves stay external (NVIDIA App / Afterburner).");
         if (parts.Count == 0)
-            return "ZenLoop targets AMD Ryzen CPUs and AMD Radeon GPUs only.";
-        parts.Add("AMD Ryzen + Radeon remain the supported path. Optimize and SMU writes stay AMD-only.");
+            return "ZenLoop Optimize targets AMD Ryzen + Radeon; other vendors use detect + honest capability matrix.";
+        parts.Add("AMD Ryzen + Radeon remain the primary Optimize path. See the multi-vendor capability matrix for real CanApply flags.");
         return string.Join(" ", parts);
     }
 

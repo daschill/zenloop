@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  Build unsigned Inno Setup and/or MSIX installers from dist\ZenLoop (after publish.ps1).
+  Build Inno Setup and/or MSIX installers from dist\ZenLoop (after publish.ps1).
 
 .DESCRIPTION
-  No EV / code-signing certificate is required. Scripts produce unsigned artifacts suitable
-  for GitHub Releases. SmartScreen may warn until reputation or a purchased cert exists.
+  Unsigned by default. When SIGNING_CERT_* secrets exist, signs Setup.exe / MSIX via
+  scripts\sign-artifacts.ps1 after packing. See docs\CODE-SIGNING.md.
 
 .PARAMETER SkipPublish
   Do not run publish.ps1 (expects dist\ZenLoop already populated).
@@ -136,9 +136,16 @@ if ($Msix) {
         & $makeappx pack /d $stage /p $msixPath /o
         if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed with exit $LASTEXITCODE" }
         $built += $msixPath
-        Write-Host "MSIX (unsigned): $msixPath"
-        Write-Host "Sideload: enable Developer Mode, or sign with your own cert. No EV cert required to build."
+        Write-Host "MSIX: $msixPath"
+        Write-Host "Sideload: enable Developer Mode, or sign with SIGNING_CERT_* (see docs/CODE-SIGNING.md)."
     }
+}
+
+# Optional Authenticode for installers (no-op without secrets).
+$signScript = Join-Path $Root "scripts\sign-artifacts.ps1"
+if ((Test-Path $signScript) -and $built.Count -gt 0) {
+    powershell -ExecutionPolicy Bypass -File $signScript -DistDir $distApp -ExtraFiles $built
+    if ($LASTEXITCODE -ne 0) { throw "sign-artifacts.ps1 failed with exit $LASTEXITCODE" }
 }
 
 Write-Host ""
@@ -150,3 +157,4 @@ else {
     $built | ForEach-Object { Write-Host "  $_" }
 }
 Write-Host "Attach docs\version.json (or version.example.json content) as Release asset 'version.json' for in-app update checks."
+Write-Host "Signing: docs\CODE-SIGNING.md (unsigned unless SIGNING_CERT_* set)."

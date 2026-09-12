@@ -28,8 +28,10 @@ By installing or running ZenLoop you agree to the following:
    in the UI. ZenLoop refuses silent BIOS success. A reboot is required for firmware values.
    Full UEFI restore / CLR_CMOS is your responsibility if the system will not POST.
 
-6. SUPPORTED HARDWARE. This release targets AMD Ryzen CPUs and AMD Radeon GPUs. Intel CPUs and
-   NVIDIA GPUs are unsupported for hardware control.
+6. SUPPORTED HARDWARE. Primary Optimize path: AMD Ryzen CPUs and AMD Radeon GPUs (ADLX +
+   Ryzen Master). Intel/NVIDIA hardware may be detected and shown in a capability matrix;
+   Apply runs only when a public signed API is available. ZenLoop does not use WinRing0 or
+   raw SMU access.
 
 7. LICENSE OF SOURCE. Source code is available under the MIT License. This EULA does not reduce
    the MIT grant for the source; it states additional risk acknowledgements for running the

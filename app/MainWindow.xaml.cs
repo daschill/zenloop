@@ -32,6 +32,9 @@ public partial class MainWindow : Window
     readonly List<TextBlock> _coLabels = new();
     WindowsControlCapabilities? _caps;
     WindowsControlSurface? _control;
+    MultiVendorCapabilityMatrix? _vendorMatrix;
+    string? _cpuName;
+    NvidiaGpuProbeResult? _nvidiaProbe;
 
     public MainWindow()
     {
@@ -222,12 +225,90 @@ public partial class MainWindow : Window
                     _last.Fan is not null);
             _caps = await Task.Run(() => _smu.ProbeCapabilities(info, gpuProbe));
             ApplyCapabilityUi(_caps);
+            RefreshVendorMatrix(_caps);
         }
         catch (Exception ex)
         {
             TxtPboBackend.Text = "SMU: " + ex.Message;
             TxtControlCaps.Text = "Capabilities: probe failed — " + ex.Message;
         }
+    }
+
+    void RefreshVendorMatrix(WindowsControlCapabilities? caps)
+    {
+        try
+        {
+            _cpuName ??= SystemHardwareNames.TryReadProcessorName();
+            var adapters = SystemHardwareNames.ListDisplayAdapterNames();
+            string? gpuName = _last?.GpuName;
+            if (string.IsNullOrWhiteSpace(gpuName))
+                gpuName = adapters.FirstOrDefault(ProductIdentity.LooksAmdGpu)
+                          ?? adapters.FirstOrDefault(ProductIdentity.LooksNvidia)
+                          ?? adapters.FirstOrDefault();
+
+            _nvidiaProbe = NvidiaNvapiBackend.Probe(gpuName, adapters);
+            var intel = IntelPlatformBackend.Probe(_cpuName, gpuName, adapters);
+            _vendorMatrix = MultiVendorCapabilityMatrix.Build(
+                gpuName, _cpuName, caps, _nvidiaProbe, intel, adapters);
+
+            if (TxtVendorMatrix is not null)
+                TxtVendorMatrix.Text = _vendorMatrix.FormatForUi();
+
+            bool nvApply = _vendorMatrix.NvidiaGpu.Features.Any(f => f.Feature == "SessionPowerLimit" && f.CanApply);
+            if (BtnNvidiaPowerApply is not null)
+            {
+                BtnNvidiaPowerApply.IsEnabled = nvApply;
+                BtnNvidiaPowerApply.Opacity = nvApply ? 1.0 : 0.55;
+            }
+
+            var support = PlatformSupport.FromNames(gpuName, _cpuName);
+            if (TxtPlatformHint is not null)
+                TxtPlatformHint.Text = support.HasUnsupportedHint ? support.Message : "";
+
+            if (TxtFooterRight is not null)
+                TxtFooterRight.Text =
+                    $"v{ProductIdentity.Version}  ·  {_vendorMatrix.OneLineSummary()}";
+        }
+        catch (Exception ex)
+        {
+            if (TxtVendorMatrix is not null)
+                TxtVendorMatrix.Text = "Multi-vendor matrix probe failed — " + ex.Message;
+        }
+    }
+
+    async void OnNvidiaPowerApply(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureEulaAccepted()) return;
+        bool can = _vendorMatrix?.NvidiaGpu.Features.Any(f => f.Feature == "SessionPowerLimit" && f.CanApply) == true;
+        if (!can)
+        {
+            MessageBox.Show(this,
+                "NVIDIA power-limit Apply is not available (nvapi64.dll policies not resolved). Voltage curves are never applied by ZenLoop.",
+                "NVIDIA Apply refused", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        int pct = _last?.PowerPct ?? (int)SldPower.Value;
+        await RunExclusive("NVIDIA NVAPI power-limit Apply…", async ct =>
+        {
+            ct.ThrowIfCancellationRequested();
+            var result = await Task.Run(() =>
+            {
+                var raw = NvidiaNvapiBackend.ApplyPowerLimitPercent(pct);
+                return VendorApplyGuard.EnsureHonest(raw, canApply: true, "SessionPowerLimit");
+            }, ct);
+            if (!result.SessionApplied || result.Error is not null)
+                throw new HwException(result.Error ?? "NVIDIA power-limit Apply refused (no fake success).");
+            Log($"NVIDIA power limit applied via {result.Backend}: {result.Note}");
+        });
+    }
+
+    void OnIntelRefuseInfo(object sender, RoutedEventArgs e)
+    {
+        var msg = _vendorMatrix?.IntelCpu.Present == true
+            ? IntelPlatformBackend.NoPublicUndervoltReason + "\n\n" + (_vendorMatrix.IntelCpu.StatusBlock())
+            : "No Intel CPU detected. " + IntelPlatformBackend.NoPublicUndervoltReason;
+        MessageBox.Show(this, msg, "Intel Apply status", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     void ApplyCapabilityUi(WindowsControlCapabilities caps)
@@ -412,7 +493,8 @@ public partial class MainWindow : Window
         var snap = await Task.Run(() => _hw.Info());
         _last = snap;
         TxtSubtitle.Text = $"{snap.GpuName}  ·  {snap.VramMb} MB";
-        var support = PlatformSupport.FromNames(snap.GpuName, cpuName: null);
+        _cpuName ??= SystemHardwareNames.TryReadProcessorName();
+        var support = PlatformSupport.FromNames(snap.GpuName, _cpuName);
         TxtPlatformHint.Text = support.HasUnsupportedHint ? support.Message : "";
         if (support.HasUnsupportedHint)
             Log(support.Message);
@@ -421,6 +503,7 @@ public partial class MainWindow : Window
         TxtFactory.Foreground = snap.AtFactory ? (Brush)FindResource("Cyan") : (Brush)FindResource("Accent");
         ApplyMetrics(snap);
         InitSliders(snap);
+        RefreshVendorMatrix(_caps);
     }
 
     void InitSliders(HwSnapshot s)
@@ -1166,10 +1249,13 @@ public partial class MainWindow : Window
         if (!EnsureEulaAccepted()) return;
         if (_last is not null)
         {
-            var support = PlatformSupport.FromNames(_last.GpuName);
-            if (!support.AmdGpuLikely)
+            _cpuName ??= SystemHardwareNames.TryReadProcessorName();
+            var support = PlatformSupport.FromNames(_last.GpuName, _cpuName);
+            if (!support.OptimizePathSupported)
             {
-                MessageBox.Show(this, support.Message, "Unsupported GPU", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this,
+                    support.Message + "\n\nOne-click Optimize stays AMD ADLX + Ryzen Master. See the multi-vendor capability matrix for real CanApply flags.",
+                    "Optimize path", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
         }
