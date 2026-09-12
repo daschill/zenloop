@@ -76,6 +76,9 @@ public sealed class AutotuneService
     }
 
     public string ProgressPath => Path.Combine(_root, "logs", "autotune-progress.json");
+    public string OptimizeCheckpointPath => Path.Combine(_root, "logs", "optimize-checkpoint.json");
+    public string OptimizeHistoryPath => Path.Combine(_root, "profiles", "optimize-history.json");
+    public string AppProfilesPath => Path.Combine(_root, "profiles", "app-profiles.json");
     public string MachineMemoryPath => Path.Combine(_root, "profiles", "machine-tune-memory.json");
     public string StartupProfilePath => Path.Combine(_root, "profiles", "startup.json");
     public string CpuPboProfilePath => Path.Combine(_root, "profiles", "cpu-pbo.json");
@@ -106,6 +109,20 @@ public sealed class AutotuneService
     public AppSettings LoadSettings() => AppSettings.Load(SettingsPath);
 
     public void SaveSettings(AppSettings s) => s.Save(SettingsPath);
+
+    public OptimizeCheckpoint? LoadIncompleteOptimize(string? goal = null)
+        => OptimizeCheckpoint.TryLoadIncomplete(OptimizeCheckpointPath, goal);
+
+    public bool HasIncompleteOptimize(string? goal = null)
+        => LoadIncompleteOptimize(goal) is not null;
+
+    public void ClearOptimizeCheckpoint() => OptimizeCheckpoint.Delete(OptimizeCheckpointPath);
+
+    public OptimizeHistory LoadOptimizeHistory() => OptimizeHistory.Load(OptimizeHistoryPath);
+
+    public AppProfileStore LoadAppProfiles() => AppProfileStore.Load(AppProfilesPath);
+
+    public void SaveAppProfiles(AppProfileStore store) => store.Save(AppProfilesPath);
 
     public string BenchBaselinePath => Path.Combine(_root, "profiles", "bench-baseline.json");
     public string BenchCurrentPath => Path.Combine(_root, "profiles", "bench-current.json");
@@ -208,7 +225,8 @@ public sealed class AutotuneService
         SmuService? smu,
         CpuPboProfile seed,
         IProgress<TuneProgress>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool resume = false)
     {
         IProgress<TuneProgress>? Scale(double lo, double hi)
         {
@@ -217,57 +235,184 @@ public sealed class AutotuneService
                 progress.Report(p with { Fraction = lo + Math.Clamp(p.Fraction, 0, 1) * (hi - lo) }));
         }
 
-        // Stock reset invalidates any mid-tune GPU progress from a prior interrupted run.
-        ClearProgress();
-
-        progress?.Report(new TuneProgress("Restoring stock GPU for baseline…", 0.02, null, "stock", null));
-        await Task.Run(() => _hw.Reset(), ct);
-
-        if (smu is { IsAvailable: true })
+        var planned = OptimizePhases.Default.ToList();
+        var ck = resume ? OptimizeCheckpoint.TryLoadIncomplete(OptimizeCheckpointPath, goal) : null;
+        bool didResume = ck is not null;
+        if (ck is null)
         {
-            progress?.Report(new TuneProgress("Session Curve Optimizer = 0 (stock CPU)…", 0.04, null, "cpu-stock", null));
-            try
+            ck = new OptimizeCheckpoint
             {
-                ApplySessionStockCo(smu, seed);
-            }
-            catch (Exception ex)
-            {
-                progress?.Report(new TuneProgress("CPU stock session skipped: " + ex.Message, 0.05, null, "cpu-stock", false));
-            }
+                Goal = goal,
+                PlannedPhases = planned,
+                SkipVram = skipVram,
+            };
+        }
+        else
+        {
+            planned = ck.PlannedPhases.Count > 0 ? ck.PlannedPhases : planned;
+            skipVram = ck.SkipVram;
         }
 
-        progress?.Report(new TuneProgress("Benchmarking stock…", 0.06, null, "baseline", null));
-        await RunSystemBenchAsync("baseline", seconds, limits, Scale(0.06, 0.22), ct);
+        var remaining = ResumePlanner.RemainingSteps(planned, ck.LastCompletedPhase);
+        bool Need(string phase) => remaining.Contains(phase);
 
-        progress?.Report(new TuneProgress("Auto GPU undervolt + overclock…", 0.22, null, "gpu", null));
-        var gpu = await GpuAutotuneAsync(goal, seconds, limits, skipVram, Scale(0.22, 0.68), ct, resume: false);
-        bool gpuOk = gpu.TryGetValue("ok", out var okObj) && okObj is true;
-        if (!gpuOk)
-            progress?.Report(new TuneProgress("GPU tune: " + gpu.GetValueOrDefault("reason"), 0.68, null, "gpu", false));
-
-        CpuPboProfile? cpuProfile = null;
-        if (smu is { IsAvailable: true })
+        async Task CompletePhase(string phase)
         {
-            progress?.Report(new TuneProgress("Auto-tune per-core Curve Optimizer…", 0.68, null, "cpu", null));
-            try
-            {
-                cpuProfile = await CpuPboAutotuneAsync(smu, seed, Math.Max(8, seconds / 2), limits, Scale(0.68, 0.86), ct);
-            }
-            catch (Exception ex)
-            {
-                progress?.Report(new TuneProgress("CPU tune skipped: " + ex.Message, 0.86, null, "cpu", false));
-            }
+            ck.LastCompletedPhase = phase;
+            ck.Save(OptimizeCheckpointPath);
+            progress?.Report(new TuneProgress(
+                OptimizeSummary.PhaseChecklist(planned, ck.LastCompletedPhase, null),
+                0, null, phase, true));
         }
 
-        progress?.Report(new TuneProgress("Benchmarking tuned system…", 0.86, null, "current", null));
-        await RunSystemBenchAsync("current", seconds, limits, Scale(0.86, 1.0), ct);
+        if (didResume)
+        {
+            progress?.Report(new TuneProgress(ck.DescribeResume(), 0.01, null, "resume", null));
+            progress?.Report(new TuneProgress(
+                OptimizeSummary.PhaseChecklist(planned, ck.LastCompletedPhase,
+                    remaining.Count > 0 ? remaining[0] : null), 0.015, null, "resume", null));
+            await ReapplySavedTunesForResumeAsync(remaining, smu, ct);
+        }
+
+        bool gpuOk = ck.GpuOk ?? false;
+        string? gpuReason = ck.GpuReason;
+        TuneSettings? winner = null;
+        if (ck.DailyMv is int dmv && ck.ClockMhz is int cmhz)
+        {
+            winner = new TuneSettings(cmhz, 500, dmv, ck.VramMhz ?? 2500, false, 0, PerformanceFan);
+        }
+
+        CpuPboProfile? cpuProfile = LoadCpuPboProfile();
+
+        if (Need("stock"))
+        {
+            // Fresh Optimize invalidates mid-tune GPU progress from a prior interrupted GPU-only run.
+            ClearProgress();
+            progress?.Report(new TuneProgress("Restoring stock GPU for baseline…", 0.02, null, "stock", null));
+            await Task.Run(() => _hw.Reset(), ct);
+
+            if (smu is { IsAvailable: true })
+            {
+                progress?.Report(new TuneProgress("Session Curve Optimizer = 0 (stock CPU)…", 0.04, null, "cpu-stock", null));
+                try
+                {
+                    ApplySessionStockCo(smu, seed);
+                }
+                catch (Exception ex)
+                {
+                    progress?.Report(new TuneProgress("CPU stock session skipped: " + ex.Message, 0.05, null, "cpu-stock", false));
+                }
+            }
+
+            try
+            {
+                var info = await Task.Run(() => _hw.Info(), ct);
+                ck.StockVoltMv = info.VoltageMv ?? info.VoltageRange?.Max ?? 0;
+                ck.StockClockMhz = info.MaxMhz ?? info.DefaultMaxMhz ?? 0;
+                ck.StockVramMhz = info.VramMhz ?? 0;
+            }
+            catch { /* fingerprint best-effort */ }
+
+            await CompletePhase("stock");
+        }
+
+        if (Need("baseline"))
+        {
+            progress?.Report(new TuneProgress("Benchmarking stock…", 0.06, null, "baseline", null));
+            await RunSystemBenchAsync("baseline", seconds, limits, Scale(0.06, 0.22), ct);
+            await CompletePhase("baseline");
+        }
+
+        if (Need("gpu"))
+        {
+            progress?.Report(new TuneProgress("Auto GPU undervolt + overclock…", 0.22, null, "gpu", null));
+            // Resume GPU search if a mid-GPU crash left autotune-progress.json
+            bool gpuResume = didResume && HasProgress(goal);
+            var gpu = await GpuAutotuneAsync(goal, seconds, limits, skipVram, Scale(0.22, 0.68), ct, resume: gpuResume);
+            gpuOk = gpu.TryGetValue("ok", out var okObj) && okObj is true;
+            gpuReason = gpu.GetValueOrDefault("reason")?.ToString();
+            if (!gpuOk)
+                progress?.Report(new TuneProgress("GPU tune: " + gpuReason, 0.68, null, "gpu", false));
+            winner = gpu.TryGetValue("winner", out var wObj) && wObj is TuneSettings w ? w : winner;
+            ck.GpuOk = gpuOk;
+            ck.GpuReason = gpuReason;
+            if (winner is not null)
+            {
+                ck.DailyMv = winner.VoltageMv;
+                ck.ClockMhz = winner.MaxMhz;
+                ck.VramMhz = winner.VramMhz;
+            }
+            await CompletePhase("gpu");
+        }
+
+        if (Need("cpu"))
+        {
+            if (smu is { IsAvailable: true })
+            {
+                progress?.Report(new TuneProgress("Auto-tune per-core Curve Optimizer…", 0.68, null, "cpu", null));
+                try
+                {
+                    cpuProfile = await CpuPboAutotuneAsync(smu, seed, Math.Max(8, seconds / 2), limits, Scale(0.68, 0.86), ct);
+                }
+                catch (Exception ex)
+                {
+                    progress?.Report(new TuneProgress("CPU tune skipped: " + ex.Message, 0.86, null, "cpu", false));
+                }
+            }
+            else
+                progress?.Report(new TuneProgress("CPU tune skipped: SMU unavailable", 0.86, null, "cpu", false));
+            await CompletePhase("cpu");
+        }
+
+        if (Need("current"))
+        {
+            progress?.Report(new TuneProgress("Benchmarking tuned system…", 0.86, null, "current", null));
+            await RunSystemBenchAsync("current", seconds, limits, Scale(0.86, 1.0), ct);
+            await CompletePhase("current");
+        }
+
         var delta = CompareSavedBenches();
-        TuneSettings? winner = gpu.TryGetValue("winner", out var wObj) && wObj is TuneSettings w ? w : null;
         var summary = OptimizeSummary.FormatPostTune(
-            delta, gpuOk, gpu.GetValueOrDefault("reason")?.ToString(),
-            winner?.VoltageMv, winner?.MaxMhz, winner?.VramMhz, cpuProfile);
-        progress?.Report(new TuneProgress(summary, 1, null, "done", true));
+            delta, gpuOk, gpuReason,
+            winner?.VoltageMv ?? ck.DailyMv,
+            winner?.MaxMhz ?? ck.ClockMhz,
+            winner?.VramMhz ?? ck.VramMhz,
+            cpuProfile);
+        var pass = gpuOk && delta is not null;
+        var entry = OptimizeHistoryEntry.FromResult(
+            goal, pass, delta, LoadBenchBaseline(), LoadBenchCurrent(),
+            gpuOk, ck.DailyMv ?? winner?.VoltageMv, ck.ClockMhz ?? winner?.MaxMhz,
+            ck.VramMhz ?? winner?.VramMhz, cpuProfile, didResume, summary);
+        var hist = LoadOptimizeHistory();
+        hist.Add(entry);
+        hist.Save(OptimizeHistoryPath);
+
+        ck.LastCompletedPhase = "done";
+        ClearOptimizeCheckpoint();
+        progress?.Report(new TuneProgress(summary, 1, null, "done", pass));
         return delta;
+    }
+
+    async Task ReapplySavedTunesForResumeAsync(
+        IReadOnlyList<string> remaining,
+        SmuService? smu,
+        CancellationToken ct)
+    {
+        // Past GPU: re-apply saved GPU profile so CPU / current bench see the tuned state.
+        bool pastGpu = !remaining.Contains("gpu") && remaining.Count > 0;
+        bool pastCpu = !remaining.Contains("cpu") && remaining.Contains("current");
+        if (pastGpu)
+        {
+            var gpu = LoadStartupProfile();
+            if (gpu is not null)
+                await Task.Run(() => ApplyProfile(gpu), ct);
+        }
+        if (pastCpu && smu is { IsAvailable: true })
+        {
+            var cpu = LoadCpuPboProfile();
+            if (cpu is not null)
+                await Task.Run(() => smu.Apply(cpu, PersistMode.Session), ct);
+        }
     }
 
     public BenchDelta? CompareSavedBenches()

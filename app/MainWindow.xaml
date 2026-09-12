@@ -371,8 +371,14 @@
                                 <Button x:Name="BtnImportPack" Content="Import tune pack" Click="OnImportPack"
                                         ToolTip="Load a ZenLoop profile pack into saved profiles (does not auto-apply until you Restore / Apply)."/>
                             </UniformGrid>
+                            <Button x:Name="BtnBindAppProfile" Content="Bind current pack to app…" Margin="0,0,0,8" Click="OnBindAppProfile"
+                                    ToolTip="Foundation: map an .exe name to a saved tune pack for later per-game switching."/>
+                            <TextBlock x:Name="TxtAppProfiles" Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                       Text="Per-app profiles: off (foundation — bind a pack to an exe name)."/>
                             <TextBlock x:Name="TxtBench" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
                                        Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer (all-core confirm) → tuned bench. Results stay here after Optimize."/>
+                            <TextBlock x:Name="TxtHistory" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
+                                       Text="Optimize history: none yet."/>
                             <TextBlock x:Name="TxtCores" Style="{StaticResource Label}" Margin="0,0,0,8" Text="Per-core CO: not run yet. Failed cores need a weaker BIOS Curve Optimizer offset." TextWrapping="Wrap"/>
 
                             <Grid Margin="0,4,0,0">

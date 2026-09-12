@@ -93,6 +93,9 @@ public partial class MainWindow : Window
                 await TryApplyCpuStartupAsync();
             }
             RefreshBenchText();
+            RefreshHistoryText();
+            RefreshAppProfilesText();
+            MaybeOfferOptimizeResume();
             _poll.Start();
             if (prereq.AllReady)
                 SetStatus("LIVE", true);
@@ -896,7 +899,23 @@ public partial class MainWindow : Window
         }
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = (int)SldSeconds.Value;
-        if (MessageBox.Show(this,
+
+        bool resume = false;
+        var incomplete = _tune.LoadIncompleteOptimize(goal);
+        if (incomplete is not null)
+        {
+            var choice = MessageBox.Show(this,
+                incomplete.DescribeResume() + "\n\nYes = continue after reboot/crash\nNo = start fresh\nCancel = abort",
+                "Resume Optimize?",
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (choice == MessageBoxResult.Cancel) return;
+            if (choice == MessageBoxResult.Yes)
+                resume = true;
+            else
+                _tune.ClearOptimizeCheckpoint();
+        }
+
+        if (!resume && MessageBox.Show(this,
                 "ZenLoop will:\n"
                 + "1. Restore stock GPU (and session Curve Optimizer = 0 if SMU is live)\n"
                 + "2. Benchmark stock (CPU + RAM + GPU)\n"
@@ -910,9 +929,17 @@ public partial class MainWindow : Window
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
 
+        if (resume && MessageBox.Show(this,
+                "Continue Optimize from the last finished phase?\n"
+                + $"{incomplete!.DescribeResume()}\n\n"
+                + ProductIdentity.ShortDisclaimer,
+                "Continue Optimize",
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+
         var limits = new Limits { MinVoltageMv = 1025, MaxClockMhz = 3000 };
         var seed = UiProfile();
-        await RunExclusive("Optimizing this PC…", async ct =>
+        await RunExclusive(resume ? "Resuming Optimize…" : "Optimizing this PC…", async ct =>
         {
             var progress = new Progress<TuneProgress>(p =>
             {
@@ -923,8 +950,9 @@ public partial class MainWindow : Window
                     ApplyMetrics(_last with { Metrics = p.Metrics });
             });
             var delta = await _tune.RunAutonomousAsync(
-                goal, secs, limits, ChkSkipVram.IsChecked == true, _smu, seed, progress, ct);
+                goal, secs, limits, ChkSkipVram.IsChecked == true, _smu, seed, progress, ct, resume);
             RefreshBenchText();
+            RefreshHistoryText();
             if (delta is not null)
             {
                 Log(delta.Summary);
@@ -1163,6 +1191,80 @@ public partial class MainWindow : Window
             TxtBench.Text = $"Baseline saved {a.Utc:u}. Tune, then Bench current.";
         else if (a is null && b is not null)
             TxtBench.Text = $"Current saved {b.Utc:u}. Run Bench baseline at stock to compare.";
+    }
+
+    void RefreshHistoryText()
+    {
+        if (_tune is null || TxtHistory is null) return;
+        TxtHistory.Text = _tune.LoadOptimizeHistory().FormatRecent(5);
+    }
+
+    void RefreshAppProfilesText()
+    {
+        if (_tune is null || TxtAppProfiles is null) return;
+        var store = _tune.LoadAppProfiles();
+        TxtAppProfiles.Text = store.StatusLine();
+        var active = AppProfileMatcher.FindActive(store);
+        if (active is not null)
+            TxtAppProfiles.Text += $" Active match: {active.DisplayName ?? active.Match}.";
+    }
+
+    void MaybeOfferOptimizeResume()
+    {
+        if (_tune is null) return;
+        var ck = _tune.LoadIncompleteOptimize();
+        if (ck is null) return;
+        Log(ck.DescribeResume());
+        TxtFooter.Text = "Incomplete Optimize found — click Optimize this PC to continue or start fresh.";
+    }
+
+    void OnBindAppProfile(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        if (!EnsureEulaAccepted()) return;
+        var pack = _tune.BuildProfilePack(
+            ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString(),
+            notes: "Per-app bind");
+        if (pack.Gpu is null && pack.Cpu is null && pack.Ram is null)
+        {
+            MessageBox.Show(this, "Nothing to bind yet. Run Optimize or save GPU/CPU/RAM profiles first.",
+                "Bind pack to app", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose game/app executable to bind",
+            Filter = "Executable (*.exe)|*.exe|All files|*.*",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            var match = System.IO.Path.GetFileName(dlg.FileName);
+            var packsDir = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(_tune.AppProfilesPath) ?? "",
+                "app-packs");
+            Directory.CreateDirectory(packsDir);
+            var packPath = System.IO.Path.Combine(packsDir, System.IO.Path.GetFileNameWithoutExtension(match) + ".zenloop.json");
+            pack.SaveFile(packPath);
+
+            var store = _tune.LoadAppProfiles();
+            store.Enabled = true;
+            store.Upsert(match, packPath, displayName: System.IO.Path.GetFileNameWithoutExtension(match));
+            _tune.SaveAppProfiles(store);
+            RefreshAppProfilesText();
+            Log($"Bound pack to '{match}' → {packPath}");
+            MessageBox.Show(this,
+                $"Bound '{match}' to:\n{packPath}\n\n"
+                + "Foundation only: ZenLoop can match the process name; automatic hot-apply while gaming comes later.",
+                "Per-app profile", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Bind failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     void OnStop(object sender, RoutedEventArgs e) => _cts?.Cancel();
