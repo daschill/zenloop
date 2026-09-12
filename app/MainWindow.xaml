@@ -346,6 +346,8 @@
 
                             <CheckBox x:Name="ChkSkipVram" Content="Skip VRAM search (faster)" Margin="0,10,0,4"/>
                             <CheckBox x:Name="ChkApplyOnStart" Content="Apply saved GPU + CPU on launch" IsChecked="True" Click="OnSettingsChanged"/>
+                            <CheckBox x:Name="ChkAppAutoApply" Content="Auto-apply per-app pack when matched exe is focused" Click="OnAppAutoApplyChanged"
+                                      ToolTip="Default off. When enabled, ZenLoop watches the foreground window and applies the bound tune pack (debounced; never during Optimize)."/>
                             <CheckBox x:Name="ChkStartWithWindows" Content="Start with Windows" Click="OnSettingsChanged"/>
                             <CheckBox x:Name="ChkTray" Content="Minimize to tray" IsChecked="True" Click="OnSettingsChanged" Margin="0,0,0,12"/>
 
@@ -372,9 +374,9 @@
                                         ToolTip="Load a ZenLoop profile pack into saved profiles (does not auto-apply until you Restore / Apply)."/>
                             </UniformGrid>
                             <Button x:Name="BtnBindAppProfile" Content="Bind current pack to app…" Margin="0,0,0,8" Click="OnBindAppProfile"
-                                    ToolTip="Foundation: map an .exe name to a saved tune pack for later per-game switching."/>
+                                    ToolTip="Map an .exe to a tune pack. Enable auto-apply above to hot-apply when that app is focused."/>
                             <TextBlock x:Name="TxtAppProfiles" Style="{StaticResource Label}" Margin="0,0,0,6" TextWrapping="Wrap"
-                                       Text="Per-app profiles: off (foundation — bind a pack to an exe name)."/>
+                                       Text="Per-app profiles: off (bind a pack to an exe, then enable auto-apply)."/>
                             <TextBlock x:Name="TxtBench" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
                                        Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer (all-core confirm) → tuned bench. Results stay here after Optimize."/>
                             <TextBlock x:Name="TxtHistory" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"

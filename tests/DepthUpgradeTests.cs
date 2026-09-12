@@ -134,7 +134,10 @@ public class DepthUpgradeTests
             store.Save(path);
             var loaded = AppProfileStore.Load(path);
             Assert.Equal(2, loaded.Rules.Count);
-            Assert.Contains("enabled", loaded.StatusLine(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(loaded.AutoApply);
+            Assert.Contains("auto-apply off", loaded.StatusLine(), StringComparison.OrdinalIgnoreCase);
+            loaded.AutoApply = true;
+            Assert.Contains("auto-apply on", loaded.StatusLine(), StringComparison.OrdinalIgnoreCase);
         }
         finally { TryDelete(dir); }
     }
@@ -148,16 +151,141 @@ public class DepthUpgradeTests
         // May or may not find depending on process enumeration permissions; Match alone is authoritative.
         Assert.NotNull(store.Match(self));
         Assert.NotNull(store.Match(self + ".exe"));
+        Assert.NotNull(AppProfileMatcher.MatchForeground(store, @"C:\Games\" + self + ".exe"));
+        Assert.Null(AppProfileMatcher.MatchForeground(store, "other.exe"));
     }
 
     [Fact]
-    public void OptimizeSummary_checklist_works_for_optimize_phases()
+    public void AppProfileHotApply_gating_respects_toggle_busy_debounce_and_pack()
+    {
+        var store = new AppProfileStore { Enabled = true, AutoApply = true };
+        var pack = Path.Combine(Path.GetTempPath(), "zenloop-hot-" + Guid.NewGuid().ToString("n") + ".json");
+        File.WriteAllText(pack, "{}");
+        try
+        {
+            var rule = store.Upsert("game.exe", pack, "Game");
+            var now = DateTime.UtcNow;
+            bool Exists(string p) => File.Exists(p);
+
+            Assert.Equal(AppProfileApplyDecision.SkipAutoApplyOff,
+                AppProfileHotApply.Decide(store, autoApplyEnabled: false, optimizeBusy: false, rule,
+                    null, now, now - TimeSpan.FromSeconds(5), packExists: Exists));
+            Assert.Equal(AppProfileApplyDecision.SkipBusy,
+                AppProfileHotApply.Decide(store, true, optimizeBusy: true, rule,
+                    null, now, now - TimeSpan.FromSeconds(5), packExists: Exists));
+            Assert.Equal(AppProfileApplyDecision.SkipNoMatch,
+                AppProfileHotApply.Decide(store, true, false, matched: null,
+                    null, now, now - TimeSpan.FromSeconds(5), packExists: Exists));
+            Assert.Equal(AppProfileApplyDecision.SkipDebounce,
+                AppProfileHotApply.Decide(store, true, false, rule,
+                    null, now, focusChangedUtc: now, debounce: TimeSpan.FromSeconds(2), packExists: Exists));
+            Assert.Equal(AppProfileApplyDecision.SkipAlreadyApplied,
+                AppProfileHotApply.Decide(store, true, false, rule,
+                    lastAppliedPackPath: pack, now, now - TimeSpan.FromSeconds(5), packExists: Exists));
+            Assert.Equal(AppProfileApplyDecision.SkipMissingPack,
+                AppProfileHotApply.Decide(store, true, false, rule,
+                    null, now, now - TimeSpan.FromSeconds(5), packExists: _ => false));
+            Assert.Equal(AppProfileApplyDecision.Apply,
+                AppProfileHotApply.Decide(store, true, false, rule,
+                    null, now, now - TimeSpan.FromSeconds(5), packExists: Exists));
+        }
+        finally { try { File.Delete(pack); } catch { /* ignore */ } }
+    }
+
+    [Fact]
+    public void AppProfileHotApplySession_debounces_then_applies_once_per_focus()
+    {
+        var store = new AppProfileStore { Enabled = true };
+        var pack = Path.Combine(Path.GetTempPath(), "zenloop-hot2-" + Guid.NewGuid().ToString("n") + ".json");
+        File.WriteAllText(pack, "{}");
+        try
+        {
+            store.Upsert("game.exe", pack);
+            var session = new AppProfileHotApplySession();
+            var t0 = DateTime.UtcNow;
+            var (d0, m0) = session.Tick(store, autoApplyEnabled: true, optimizeBusy: false, "game.exe", t0,
+                debounce: TimeSpan.FromSeconds(2), packExists: File.Exists);
+            Assert.Equal(AppProfileApplyDecision.SkipDebounce, d0);
+            Assert.NotNull(m0);
+
+            var (d1, _) = session.Tick(store, true, false, "game.exe", t0.AddSeconds(3),
+                debounce: TimeSpan.FromSeconds(2), packExists: File.Exists);
+            Assert.Equal(AppProfileApplyDecision.Apply, d1);
+            session.MarkApplied(pack);
+
+            var (d2, _) = session.Tick(store, true, false, "game.exe", t0.AddSeconds(4),
+                debounce: TimeSpan.FromSeconds(2), packExists: File.Exists);
+            Assert.Equal(AppProfileApplyDecision.SkipAlreadyApplied, d2);
+
+            // Busy Optimize must not apply even after debounce.
+            session.ClearApplied();
+            var (dBusy, _) = session.Tick(store, true, optimizeBusy: true, "game.exe", t0.AddSeconds(10),
+                debounce: TimeSpan.FromSeconds(2), packExists: File.Exists);
+            Assert.Equal(AppProfileApplyDecision.SkipBusy, dBusy);
+        }
+        finally { try { File.Delete(pack); } catch { /* ignore */ } }
+    }
+
+    [Fact]
+    public void OptimizeSummary_end_banner_includes_pass_fail_scores_and_abort()
     {
         var planned = OptimizePhases.Default;
         var text = OptimizeSummary.PhaseChecklist(planned, "baseline", "gpu");
         Assert.Contains("✓ baseline", text);
         Assert.Contains("… gpu", text);
         Assert.Contains("· cpu", text);
+
+        var cpu = new CpuPboProfile
+        {
+            Cores = { CurveOptimizerCore.FromSigned(0, -20), CurveOptimizerCore.FromSigned(1, -10) },
+        };
+        var baseline = new BenchRun
+        {
+            Label = "baseline",
+            Cpu = new BenchMetrics { Throughput = 100, PeakTempC = 70, AvgPowerW = 100 },
+            Gpu = new BenchMetrics { Throughput = 100, PeakTempC = 80, AvgPowerW = 200 },
+            Ram = new BenchMetrics { Throughput = 100 },
+        };
+        var tuned = new BenchRun
+        {
+            Label = "current",
+            Cpu = new BenchMetrics { Throughput = 110, PeakTempC = 68, AvgPowerW = 90 },
+            Gpu = new BenchMetrics { Throughput = 110, PeakTempC = 78, AvgPowerW = 180 },
+            Ram = new BenchMetrics { Throughput = 110 },
+        };
+        var delta = BenchCompare.Compare(baseline, tuned);
+        var pass = OptimizeSummary.FormatEndSummary(
+            true, delta, gpuOk: true, gpuReason: null,
+            dailyMv: 1080, clockMhz: 2700, vramMhz: 2500, cpu,
+            baselineScore: baseline.SystemScore, tunedScore: tuned.SystemScore);
+        Assert.Contains("=== Optimize PASS ===", pass);
+        Assert.Contains("Score:", pass);
+        Assert.Contains("GPU tune: PASS", pass);
+        Assert.Contains("1080 mV", pass);
+
+        var fail = OptimizeSummary.FormatEndSummary(
+            false, null, gpuOk: false, gpuReason: "temp trip",
+            dailyMv: null, clockMhz: null, vramMhz: null, cpu: null);
+        Assert.Contains("=== Optimize FAIL ===", fail);
+        Assert.Contains("temp trip", fail);
+
+        var abort = OptimizeSummary.FormatAbort("stopped by user");
+        Assert.Contains("=== Optimize ABORT ===", abort);
+        Assert.Contains("stopped by user", abort);
+    }
+
+    [Fact]
+    public void StartupReapply_plans_and_retries_once()
+    {
+        Assert.Null(StartupReapply.BuildPlan(false, false, false));
+        var fromSaved = StartupReapply.BuildPlan(true, true, false)!;
+        Assert.Equal("saved profiles", fromSaved.Source);
+        Assert.Contains("GPU=yes", StartupReapply.Describe(fromSaved));
+        var fromPack = StartupReapply.BuildPlan(false, false, true)!;
+        Assert.Equal("profile pack fallback", fromPack.Source);
+        Assert.True(StartupReapply.ShouldRetry(0, succeeded: false));
+        Assert.False(StartupReapply.ShouldRetry(1, succeeded: false));
+        Assert.False(StartupReapply.ShouldRetry(0, succeeded: true));
     }
 
     static string TempDir()

@@ -104,6 +104,42 @@ public sealed class AutotuneService
             SaveRamProfile(pack.Ram);
     }
 
+    /// <summary>Resolve a rule pack path (absolute or relative to profiles root).</summary>
+    public string ResolveAppPackPath(string packPath)
+    {
+        if (string.IsNullOrWhiteSpace(packPath)) return packPath;
+        if (Path.IsPathRooted(packPath)) return packPath;
+        return Path.GetFullPath(Path.Combine(_root, "profiles", packPath));
+    }
+
+    public ProfilePack? TryLoadAppPack(AppProfileRule rule)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+        var path = ResolveAppPackPath(rule.PackPath);
+        return ProfilePack.TryLoadFile(path);
+    }
+
+    /// <summary>Newest .zenloop.json under exports/ or app-packs/ for startup fallback.</summary>
+    public string? FindNewestPackFallback()
+    {
+        string? best = null;
+        DateTime bestUtc = DateTime.MinValue;
+        foreach (var dir in new[] { ProfilePackExportDir, Path.Combine(_root, "profiles", "app-packs") })
+        {
+            if (!Directory.Exists(dir)) continue;
+            foreach (var f in Directory.EnumerateFiles(dir, "*.zenloop.json"))
+            {
+                var t = File.GetLastWriteTimeUtc(f);
+                if (t > bestUtc)
+                {
+                    bestUtc = t;
+                    best = f;
+                }
+            }
+        }
+        return best;
+    }
+
     public string SettingsPath => Path.Combine(_root, "profiles", "app-settings.json");
 
     public AppSettings LoadSettings() => AppSettings.Load(SettingsPath);
@@ -372,15 +408,21 @@ public sealed class AutotuneService
         }
 
         var delta = CompareSavedBenches();
-        var summary = OptimizeSummary.FormatPostTune(
-            delta, gpuOk, gpuReason,
+        var baseline = LoadBenchBaseline();
+        var tuned = LoadBenchCurrent();
+        var pass = gpuOk && delta is not null;
+        var summary = OptimizeSummary.FormatEndSummary(
+            pass, delta, gpuOk, gpuReason,
             winner?.VoltageMv ?? ck.DailyMv,
             winner?.MaxMhz ?? ck.ClockMhz,
             winner?.VramMhz ?? ck.VramMhz,
-            cpuProfile);
-        var pass = gpuOk && delta is not null;
+            cpuProfile,
+            abortReason: null,
+            baselineScore: baseline is { SystemScore: > 0 } ? baseline.SystemScore : null,
+            tunedScore: tuned is { SystemScore: > 0 } ? tuned.SystemScore : null,
+            resumed: didResume);
         var entry = OptimizeHistoryEntry.FromResult(
-            goal, pass, delta, LoadBenchBaseline(), LoadBenchCurrent(),
+            goal, pass, delta, baseline, tuned,
             gpuOk, ck.DailyMv ?? winner?.VoltageMv, ck.ClockMhz ?? winner?.MaxMhz,
             ck.VramMhz ?? winner?.VramMhz, cpuProfile, didResume, summary);
         var hist = LoadOptimizeHistory();

@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 namespace ZenLoop.Core;
 
 /// <summary>
-/// Foundation for Adrenalin-style per-game / per-app profile switching.
+/// Adrenalin-style per-game / per-app profile switching.
 /// Rules bind an executable name (or path fragment) to a named pack file.
-/// Process watching / hot-apply is a later layer — this store is the durable map.
+/// Hot-apply is gated by <see cref="AutoApply"/> + <see cref="AppProfileHotApply"/>.
 /// </summary>
 public sealed class AppProfileRule
 {
@@ -38,8 +38,16 @@ public sealed class AppProfileStore
     [JsonPropertyName("schema")]
     public int Schema { get; set; } = SchemaVersion;
 
+    /// <summary>When false, matching and hot-apply are both off.</summary>
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// When true (and <see cref="Enabled"/>), apply the bound pack when a matched exe is foreground.
+    /// Default off — user must opt in.
+    /// </summary>
+    [JsonPropertyName("auto_apply")]
+    public bool AutoApply { get; set; }
 
     [JsonPropertyName("rules")]
     public List<AppProfileRule> Rules { get; set; } = [];
@@ -109,8 +117,11 @@ public sealed class AppProfileStore
 
     public string StatusLine()
     {
+        var n = Rules.Count(r => r.Enabled);
         if (!Enabled)
-            return $"Per-app profiles: off ({Rules.Count} rule(s) saved — foundation only; no process watcher yet).";
-        return $"Per-app profiles: on ({Rules.Count(r => r.Enabled)} enabled of {Rules.Count}).";
+            return $"Per-app profiles: off ({Rules.Count} rule(s) saved).";
+        if (!AutoApply)
+            return $"Per-app profiles: matching on, auto-apply off ({n} enabled of {Rules.Count}).";
+        return $"Per-app profiles: auto-apply on ({n} enabled of {Rules.Count}).";
     }
 }

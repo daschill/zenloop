@@ -8,6 +8,12 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; }
     public bool MinimizeToTray { get; set; } = true;
 
+    /// <summary>
+    /// Mirror of <see cref="AppProfileStore.AutoApply"/> for checkbox binding.
+    /// Persisted with settings; also written into app-profiles.json when toggled.
+    /// </summary>
+    public bool AppProfileAutoApply { get; set; }
+
     /// <summary>Last accepted <see cref="ProductIdentity.EulaVersion"/>; 0 = never accepted.</summary>
     public int AcceptedEulaVersion { get; set; }
 

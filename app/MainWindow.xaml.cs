@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     TrayService? _tray;
     bool _forceClose;
     readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromSeconds(1) };
+    readonly DispatcherTimer _hotApplyPoll = new() { Interval = TimeSpan.FromSeconds(1.5) };
+    readonly AppProfileHotApplySession _hotApply = new();
+    bool _hotApplyRunning;
     readonly Queue<double> _clockHist = new();
     readonly Queue<double> _tempHist = new();
     CancellationTokenSource? _cts;
@@ -37,6 +40,7 @@ public partial class MainWindow : Window
         TxtVersion.Text = "v" + ProductIdentity.Version;
         TxtFooterRight.Text = $"v{ProductIdentity.Version}  ·  GPU ADLX  ·  CPU/BIOS AMD Ryzen Master";
         _poll.Tick += async (_, _) => await PollAsync();
+        _hotApplyPoll.Tick += async (_, _) => await HotApplyTickAsync();
     }
 
     async void OnLoaded(object sender, RoutedEventArgs e)
@@ -88,15 +92,13 @@ public partial class MainWindow : Window
             else
                 TxtRamGuidance.Text = RamTimingGuidance.Guidance();
             if (_settings.ApplyProfilesOnStart && _settings.HasAcceptedCurrentEula)
-            {
-                await TryApplyStartupProfileAsync();
-                await TryApplyCpuStartupAsync();
-            }
+                await TryReapplySavedTunesOnStartupAsync();
             RefreshBenchText();
             RefreshHistoryText();
             RefreshAppProfilesText();
             MaybeOfferOptimizeResume();
             _poll.Start();
+            _hotApplyPoll.Start();
             if (prereq.AllReady)
                 SetStatus("LIVE", true);
         }
@@ -118,6 +120,7 @@ public partial class MainWindow : Window
             return;
         }
         _poll.Stop();
+        _hotApplyPoll.Stop();
         _tray?.Dispose();
         if (_busy)
         {
@@ -149,6 +152,8 @@ public partial class MainWindow : Window
         ChkApplyOnStart.IsChecked = _settings.ApplyProfilesOnStart;
         ChkStartWithWindows.IsChecked = _settings.StartWithWindows;
         ChkTray.IsChecked = _settings.MinimizeToTray;
+        if (ChkAppAutoApply is not null)
+            ChkAppAutoApply.IsChecked = _settings.AppProfileAutoApply;
     }
 
     void OnSettingsChanged(object sender, RoutedEventArgs e)
@@ -156,9 +161,29 @@ public partial class MainWindow : Window
         _settings.ApplyProfilesOnStart = ChkApplyOnStart.IsChecked == true;
         _settings.StartWithWindows = ChkStartWithWindows.IsChecked == true;
         _settings.MinimizeToTray = ChkTray.IsChecked == true;
+        if (ChkAppAutoApply is not null)
+            _settings.AppProfileAutoApply = ChkAppAutoApply.IsChecked == true;
         _tune?.SaveSettings(_settings);
         try { WindowsStartup.SetEnabled(_settings.StartWithWindows); }
         catch (Exception ex) { Log("Start with Windows: " + ex.Message); }
+    }
+
+    void OnAppAutoApplyChanged(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        var on = ChkAppAutoApply.IsChecked == true;
+        _settings.AppProfileAutoApply = on;
+        _tune.SaveSettings(_settings);
+        var store = _tune.LoadAppProfiles();
+        store.AutoApply = on;
+        if (on) store.Enabled = true;
+        _tune.SaveAppProfiles(store);
+        if (!on)
+            _hotApply.ClearApplied();
+        RefreshAppProfilesText();
+        Log(on
+            ? "Per-app auto-apply enabled (foreground watch, 2.5s debounce; skipped while Optimize runs)."
+            : "Per-app auto-apply disabled.");
     }
 
     async Task RefreshSmuAsync()
@@ -236,20 +261,88 @@ public partial class MainWindow : Window
         }
     }
 
-    async Task TryApplyCpuStartupAsync()
+    /// <summary>
+    /// Reliable startup re-apply: GPU + CPU from saved profiles, with one retry and pack fallback.
+    /// </summary>
+    async Task TryReapplySavedTunesOnStartupAsync()
     {
-        if (_tune is null || _smu is null) return;
-        var p = _tune.LoadCpuPboProfile();
-        if (p is null) return;
-        Log($"Applying saved CPU PBO on start (PPT {p.PptWatts} W)…");
-        try
+        if (_tune is null) return;
+        var gpu = _tune.LoadStartupProfile();
+        var cpu = _tune.LoadCpuPboProfile();
+        ProfilePack? pack = null;
+        if (gpu is null && cpu is null)
         {
-            var r = await Task.Run(() => _smu.Apply(p, PersistMode.Session));
-            Log($"CPU start apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+            var fallback = _tune.FindNewestPackFallback();
+            if (fallback is not null)
+            {
+                try
+                {
+                    pack = ProfilePack.TryLoadFile(fallback);
+                    if (pack is not null)
+                    {
+                        Log($"No discrete startup profiles — using pack fallback: {fallback}");
+                        _tune.ApplyProfilePackFiles(pack);
+                        gpu = pack.Gpu ?? _tune.LoadStartupProfile();
+                        cpu = pack.Cpu ?? _tune.LoadCpuPboProfile();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("Pack fallback load failed: " + ex.Message);
+                }
+            }
         }
-        catch (Exception ex)
+
+        var plan = StartupReapply.BuildPlan(gpu is not null, cpu is not null, pack is not null);
+        if (plan is null)
         {
-            Log("CPU startup apply failed: " + ex.Message);
+            Log("Startup re-apply: no saved GPU/CPU profiles or packs.");
+            return;
+        }
+        Log(StartupReapply.Describe(plan));
+
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            bool ok = true;
+            if (gpu is not null)
+            {
+                try
+                {
+                    Log($"Applying saved GPU profile ({gpu.VoltageMv} mV @ {gpu.MaxMhz} MHz)…");
+                    await Task.Run(() => _tune.ApplyProfile(gpu));
+                    Log("GPU startup profile applied.");
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    Log($"GPU startup apply failed (attempt {attempt + 1}): " + ex.Message);
+                }
+            }
+            if (cpu is not null && _smu is not null)
+            {
+                try
+                {
+                    Log($"Applying saved CPU PBO (PPT {cpu.PptWatts} W)…");
+                    var r = await Task.Run(() => _smu.Apply(cpu, PersistMode.Session));
+                    Log($"CPU start apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+                    if (!r.SessionApplied) ok = false;
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    Log($"CPU startup apply failed (attempt {attempt + 1}): " + ex.Message);
+                }
+            }
+            if (ok || !StartupReapply.ShouldRetry(attempt, ok))
+            {
+                if (ok)
+                    await RefreshInfoAsync();
+                else
+                    Log("Startup re-apply did not fully succeed — use Restore last tune after Adrenalin/RM are ready.");
+                return;
+            }
+            Log("Retrying startup re-apply once…");
+            try { await Task.Delay(800); } catch { /* ignore */ }
         }
     }
 
@@ -939,28 +1032,50 @@ public partial class MainWindow : Window
 
         var limits = new Limits { MinVoltageMv = 1025, MaxClockMhz = 3000 };
         var seed = UiProfile();
+        string? optimizeBanner = null;
         await RunExclusive(resume ? "Resuming Optimize…" : "Optimizing this PC…", async ct =>
         {
             var progress = new Progress<TuneProgress>(p =>
             {
                 Bar.Value = Math.Max(Bar.Value, p.Fraction);
-                TxtStep.Text = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
+                var first = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
+                TxtStep.Text = first.Length > 120 ? first[..120] : first;
                 Log(p.Message);
+                if (p.StepName == "done" && !string.IsNullOrWhiteSpace(p.Message))
+                    optimizeBanner = p.Message;
                 if (p.Metrics is not null && _last is not null)
                     ApplyMetrics(_last with { Metrics = p.Metrics });
             });
-            var delta = await _tune.RunAutonomousAsync(
-                goal, secs, limits, ChkSkipVram.IsChecked == true, _smu, seed, progress, ct, resume);
-            RefreshBenchText();
-            RefreshHistoryText();
-            if (delta is not null)
+            try
             {
-                Log(delta.Summary);
-                Log(delta.Report(_tune.LoadBenchBaseline(), _tune.LoadBenchCurrent()));
-                TxtStep.Text = delta.Summary;
+                var delta = await _tune.RunAutonomousAsync(
+                    goal, secs, limits, ChkSkipVram.IsChecked == true, _smu, seed, progress, ct, resume);
+                RefreshBenchText();
+                RefreshHistoryText();
+                if (!string.IsNullOrWhiteSpace(optimizeBanner))
+                {
+                    foreach (var line in optimizeBanner.Split('\n'))
+                        Log(line);
+                    TxtStep.Text = optimizeBanner.Split('\n')[0];
+                    if (TxtBench is not null)
+                        TxtBench.Text = optimizeBanner + (delta is null ? "" : "\n\n" + delta.Report(_tune.LoadBenchBaseline(), _tune.LoadBenchCurrent()));
+                }
+                else if (delta is not null)
+                {
+                    Log(delta.Summary);
+                    Log(delta.Report(_tune.LoadBenchBaseline(), _tune.LoadBenchCurrent()));
+                    TxtStep.Text = delta.Summary;
+                }
+                else
+                    Log("Optimize finished but a baseline or current bench is missing.");
             }
-            else
-                Log("Optimize finished but a baseline or current bench is missing.");
+            catch (OperationCanceledException)
+            {
+                var abort = OptimizeSummary.FormatAbort("stopped by user (Stop / cancel)");
+                Log(abort);
+                TxtStep.Text = "=== Optimize ABORT ===";
+                throw;
+            }
         }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
         TryLoadCpuProfileIntoUi();
@@ -1079,22 +1194,121 @@ public partial class MainWindow : Window
         }
     }
 
-    async Task TryApplyStartupProfileAsync()
+    async Task HotApplyTickAsync()
     {
-        if (_tune is null) return;
-        var p = _tune.LoadStartupProfile();
-        if (p is null) return;
-        Log($"Applying saved GPU profile on start ({p.VoltageMv} mV @ {p.MaxMhz} MHz)…");
+        if (_tune is null || _hotApplyRunning || !_settings.HasAcceptedCurrentEula)
+            return;
+        var store = _tune.LoadAppProfiles();
+        var auto = _settings.AppProfileAutoApply || store.AutoApply;
+        if (!store.Enabled && !auto)
+        {
+            RefreshAppProfilesTextQuiet();
+            return;
+        }
+
+        _hotApplyRunning = true;
         try
         {
-            await Task.Run(() => _tune.ApplyProfile(p));
-            Log("Startup profile applied.");
-            await RefreshInfoAsync();
+            var identity = await Task.Run(ForegroundProcess.TryGetIdentity);
+            var (decision, matched) = _hotApply.Tick(
+                store, auto, _busy, identity, DateTime.UtcNow,
+                packExists: p => File.Exists(_tune.ResolveAppPackPath(p)));
+
+            if (matched is not null && decision is AppProfileApplyDecision.Apply
+                or AppProfileApplyDecision.SkipDebounce
+                or AppProfileApplyDecision.SkipAlreadyApplied)
+            {
+                if (TxtAppProfiles is not null)
+                    TxtAppProfiles.Text = store.StatusLine()
+                        + $" Foreground: {matched.DisplayName ?? matched.Match} ({AppProfileHotApply.Describe(decision)}).";
+            }
+            else
+                RefreshAppProfilesTextQuiet();
+
+            if (decision != AppProfileApplyDecision.Apply || matched is null)
+                return;
+
+            var packPath = _tune.ResolveAppPackPath(matched.PackPath);
+            var pack = ProfilePack.TryLoadFile(packPath);
+            if (pack is null)
+            {
+                Log($"Hot-apply skipped: cannot load pack {packPath}");
+                return;
+            }
+
+            Log($"Hot-apply: {matched.DisplayName ?? matched.Match} → {pack.Summary()}");
+            if (await ApplyPackLiveAsync(pack, exclusive: true))
+                _hotApply.MarkApplied(matched.PackPath);
+            RefreshAppProfilesText();
         }
         catch (Exception ex)
         {
-            Log("Startup profile apply failed: " + ex.Message);
+            Log("Hot-apply: " + ex.Message);
         }
+        finally
+        {
+            _hotApplyRunning = false;
+        }
+    }
+
+    void RefreshAppProfilesTextQuiet()
+    {
+        if (_tune is null || TxtAppProfiles is null) return;
+        var store = _tune.LoadAppProfiles();
+        var text = store.StatusLine();
+        var identity = ForegroundProcess.TryGetIdentity();
+        var active = AppProfileMatcher.MatchForeground(store, identity)
+                     ?? AppProfileMatcher.FindActive(store);
+        if (active is not null)
+            text += $" Active match: {active.DisplayName ?? active.Match}.";
+        TxtAppProfiles.Text = text;
+    }
+
+    async Task<bool> ApplyPackLiveAsync(ProfilePack pack, bool exclusive)
+    {
+        if (_tune is null) return false;
+        if (exclusive && _busy) return false;
+        _tune.ApplyProfilePackFiles(pack);
+        if (pack.Cpu is not null)
+            LoadProfileToUi(pack.Cpu);
+        if (pack.Ram is not null)
+        {
+            LoadRamToUi(pack.Ram);
+            TxtRamGuidance.Text = RamTimingGuidance.Guidance(pack.Ram);
+        }
+
+        async Task Work(CancellationToken ct)
+        {
+            if (pack.Gpu is not null)
+            {
+                await Task.Run(() => _tune.ApplyProfile(pack.Gpu), ct);
+                Log($"Hot GPU apply {pack.Gpu.VoltageMv} mV @ {pack.Gpu.MaxMhz} MHz");
+            }
+            if (pack.Cpu is not null && _smu is not null)
+            {
+                var r = await Task.Run(() => _smu.Apply(pack.Cpu, PersistMode.Session), ct);
+                Log($"Hot CPU apply session={r.SessionApplied} co={r.CoWritten} {(r.Error ?? "ok")}");
+                if (!r.SessionApplied && r.Error is string err)
+                    throw new HwException(err);
+            }
+        }
+
+        if (exclusive)
+        {
+            if (_busy) return false;
+            bool ok = false;
+            await RunExclusive("Hot-applying per-app pack…", async ct =>
+            {
+                await Work(ct);
+                ok = true;
+            });
+            await RefreshInfoAsync();
+            return ok;
+        }
+
+        await Work(CancellationToken.None);
+        await RefreshInfoAsync();
+        return true;
     }
 
     async Task ApplyProfileAsync(ZenLoop.Core.GpuProfile p)
@@ -1199,15 +1413,7 @@ public partial class MainWindow : Window
         TxtHistory.Text = _tune.LoadOptimizeHistory().FormatRecent(5);
     }
 
-    void RefreshAppProfilesText()
-    {
-        if (_tune is null || TxtAppProfiles is null) return;
-        var store = _tune.LoadAppProfiles();
-        TxtAppProfiles.Text = store.StatusLine();
-        var active = AppProfileMatcher.FindActive(store);
-        if (active is not null)
-            TxtAppProfiles.Text += $" Active match: {active.DisplayName ?? active.Match}.";
-    }
+    void RefreshAppProfilesText() => RefreshAppProfilesTextQuiet();
 
     void MaybeOfferOptimizeResume()
     {
@@ -1252,13 +1458,16 @@ public partial class MainWindow : Window
 
             var store = _tune.LoadAppProfiles();
             store.Enabled = true;
+            store.AutoApply = _settings.AppProfileAutoApply;
             store.Upsert(match, packPath, displayName: System.IO.Path.GetFileNameWithoutExtension(match));
             _tune.SaveAppProfiles(store);
             RefreshAppProfilesText();
             Log($"Bound pack to '{match}' → {packPath}");
+            var tip = _settings.AppProfileAutoApply
+                ? "Auto-apply is on: when that exe is focused, ZenLoop will apply this pack (2.5s debounce; skipped during Optimize)."
+                : "Enable “Auto-apply per-app pack when matched exe is focused” to hot-apply while gaming.";
             MessageBox.Show(this,
-                $"Bound '{match}' to:\n{packPath}\n\n"
-                + "Foundation only: ZenLoop can match the process name; automatic hot-apply while gaming comes later.",
+                $"Bound '{match}' to:\n{packPath}\n\n{tip}",
                 "Per-app profile", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)

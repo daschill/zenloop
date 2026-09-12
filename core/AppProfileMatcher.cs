@@ -3,11 +3,22 @@ using System.Diagnostics;
 namespace ZenLoop.Core;
 
 /// <summary>
-/// Best-effort process → app-profile match. Foundation for Adrenalin-like per-game switching.
+/// Best-effort process → app-profile match for Adrenalin-like per-game switching.
 /// Does not apply packs by itself — callers decide when to import/apply.
 /// </summary>
 public static class AppProfileMatcher
 {
+    /// <summary>Match a single foreground process identity (exe name or full path).</summary>
+    public static AppProfileRule? MatchForeground(AppProfileStore store, string? processNameOrPath)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return store.Match(processNameOrPath);
+    }
+
+    /// <summary>
+    /// Scan running processes for the first enabled rule hit.
+    /// Prefer <see cref="MatchForeground"/> with a real foreground identity for hot-apply.
+    /// </summary>
     public static AppProfileRule? FindActive(AppProfileStore store)
     {
         ArgumentNullException.ThrowIfNull(store);
