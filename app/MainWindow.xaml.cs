@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -32,12 +33,15 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Title = ProductIdentity.WindowTitle;
+        TxtVersion.Text = "v" + ProductIdentity.Version;
+        TxtFooterRight.Text = $"v{ProductIdentity.Version}  ·  GPU ADLX  ·  CPU/BIOS AMD Ryzen Master";
         _poll.Tick += async (_, _) => await PollAsync();
     }
 
     async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        Log("Starting ADLX helper…");
+        Log($"{ProductIdentity.Name} {ProductIdentity.Version} — {ProductIdentity.Tagline}");
         try
         {
             var prereq = await Task.Run(AmdPrerequisites.Probe);
@@ -54,6 +58,10 @@ public partial class MainWindow : Window
             _control = _smu.ControlSurface();
             _settings = _tune.LoadSettings();
             LoadSettingsToUi();
+            if (!EnsureEulaAccepted(forcePrompt: !_settings.HasAcceptedCurrentEula))
+            {
+                Log("EULA not accepted — Optimize and BIOS/SMU writes stay locked until you accept in About.");
+            }
             _tray = new TrayService(this);
             BuildCoreSliders();
             SetAdminPill();
@@ -75,8 +83,11 @@ public partial class MainWindow : Window
             {
                 LoadRamToUi(ram);
                 Log($"Loaded RAM timings DDR5-{ram.DataRateMts} {ram.Tcl}-{ram.Trcd}-{ram.Trp}-{ram.Tras}");
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance(ram);
             }
-            if (_settings.ApplyProfilesOnStart)
+            else
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance();
+            if (_settings.ApplyProfilesOnStart && _settings.HasAcceptedCurrentEula)
             {
                 await TryApplyStartupProfileAsync();
                 await TryApplyCpuStartupAsync();
@@ -271,7 +282,11 @@ public partial class MainWindow : Window
         if (_hw is null) return;
         var snap = await Task.Run(() => _hw.Info());
         _last = snap;
-        TxtSubtitle.Text = $"{snap.GpuName}  ·  {snap.VramMb} MB  ·  Ryzen 7 9800X3D";
+        TxtSubtitle.Text = $"{snap.GpuName}  ·  {snap.VramMb} MB";
+        var support = PlatformSupport.FromNames(snap.GpuName, cpuName: null);
+        TxtPlatformHint.Text = support.HasUnsupportedHint ? support.Message : "";
+        if (support.HasUnsupportedHint)
+            Log(support.Message);
         TxtFactory.Text = snap.AtFactory ? "FACTORY" : "TUNED";
         PillFactory.Background = brush(snap.AtFactory ? "#1A2330" : "#3A2410");
         TxtFactory.Foreground = snap.AtFactory ? (Brush)FindResource("Cyan") : (Brush)FindResource("Accent");
@@ -473,19 +488,28 @@ public partial class MainWindow : Window
                 Log("RAM read failed. Run as Administrator so CDefaultBIOS can bind.");
                 return;
             }
-            await Dispatcher.InvokeAsync(() => LoadRamToUi(p));
-            Log($"RAM {p.DataRateMts} MT/s  tCL {p.Tcl}-{p.Trcd}-{p.Trp}-{p.Tras}  tRFC {p.Trfc}  VDDIO {p.VddioMv} mV");
+            await Dispatcher.InvokeAsync(() =>
+            {
+                LoadRamToUi(p);
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance(p);
+            });
+            Log(RamTimingGuidance.FormatPrimaryLine(p));
+            foreach (var w in RamTimingGuidance.SoftWarnings(p))
+                Log("RAM note: " + w);
         });
     }
 
     async void OnRamWrite(object sender, RoutedEventArgs e)
     {
         if (_smu is null) return;
+        if (!EnsureEulaAccepted()) return;
         if (!ConfirmDangerousWrite(BiosWriteGuard.RamBiosWarning, "Write RAM BIOS", requireAdmin: true))
             return;
         var profile = UiRamProfile();
+        foreach (var w in RamTimingGuidance.SoftWarnings(profile))
+            Log("RAM note: " + w);
         if (MessageBox.Show(this,
-                $"Confirm RAM values:\nDDR5-{profile.DataRateMts}  {profile.Tcl}-{profile.Trcd}-{profile.Trp}-{profile.Tras}  tRFC {profile.Trfc}\nVDDIO {profile.VddioMv} mV  EXPO={(profile.Expo ? "on" : "off")}",
+                $"Confirm RAM values:\n{RamTimingGuidance.FormatPrimaryLine(profile)}\n\nReboot required after a successful BIOS write.",
                 "Write RAM BIOS",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
@@ -494,6 +518,7 @@ public partial class MainWindow : Window
             var surface = _control ?? _smu.ControlSurface();
             var r = await Task.Run(() => surface.ApplyRam(profile), ct);
             _tune?.SaveRamProfile(profile);
+            await Dispatcher.InvokeAsync(() => TxtRamGuidance.Text = RamTimingGuidance.Guidance(profile));
             Log($"RAM BIOS persist={r.BiosPersisted} reboot={r.RequiresReboot} {(r.Error ?? "ok")}");
             if (!r.BiosPersisted)
                 throw new HwException(r.Error ?? "RAM BIOS apply failed");
@@ -558,6 +583,7 @@ public partial class MainWindow : Window
 
     bool ConfirmDangerousWrite(string warning, string title, bool requireAdmin)
     {
+        if (!EnsureEulaAccepted()) return false;
         if (requireAdmin && !WindowsElevation.IsAdministrator())
         {
             var again = MessageBox.Show(this,
@@ -569,6 +595,115 @@ public partial class MainWindow : Window
         }
         return MessageBox.Show(this, warning, title, MessageBoxButton.OKCancel, MessageBoxImage.Warning)
             == MessageBoxResult.OK;
+    }
+
+    bool EnsureEulaAccepted(bool forcePrompt = false)
+    {
+        if (_tune is null) return _settings.HasAcceptedCurrentEula;
+        if (!forcePrompt && _settings.HasAcceptedCurrentEula)
+            return true;
+
+        var body =
+            $"{ProductIdentity.Name} {ProductIdentity.Version}\n\n" +
+            ProductIdentity.EulaSummary + "\n\n" +
+            ProductIdentity.ShortDisclaimer + "\n\n" +
+            "Full text ships as EULA.txt and DISCLAIMER.txt next to ZenLoop.exe.\n\n" +
+            "Do you accept and continue?";
+
+        var result = MessageBox.Show(this, body, "ZenLoop — first-run safety",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes)
+            return false;
+
+        _settings.AcceptedEulaVersion = ProductIdentity.EulaVersion;
+        _tune.SaveSettings(_settings);
+        Log($"Accepted EULA v{ProductIdentity.EulaVersion}");
+        return true;
+    }
+
+    void OnAbout(object sender, RoutedEventArgs e)
+    {
+        var extra = _settings.HasAcceptedCurrentEula
+            ? $"\n\nEULA v{ProductIdentity.EulaVersion}: accepted."
+            : $"\n\nEULA v{ProductIdentity.EulaVersion}: not accepted yet.";
+        var choice = MessageBox.Show(this,
+            ProductIdentity.AboutText() + extra + "\n\nYes = re-open EULA accept  ·  No = close",
+            "About ZenLoop",
+            MessageBoxButton.YesNo, MessageBoxImage.Information);
+        if (choice == MessageBoxResult.Yes)
+            EnsureEulaAccepted(forcePrompt: true);
+    }
+
+    void OnExportPack(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString();
+        var pack = _tune.BuildProfilePack(goal, notes: "Exported from ZenLoop UI");
+        if (pack.Gpu is null && pack.Cpu is null && pack.Ram is null)
+        {
+            MessageBox.Show(this, "Nothing to export yet. Run Optimize or save GPU/CPU/RAM profiles first.",
+                "Export tune pack", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Export ZenLoop tune pack",
+            Filter = "ZenLoop profile pack (*.zenloop.json)|*.zenloop.json|JSON (*.json)|*.json",
+            FileName = $"zenloop-tune-{DateTime.Now:yyyyMMdd-HHmm}.zenloop.json",
+            InitialDirectory = Directory.Exists(_tune.ProfilePackExportDir)
+                ? _tune.ProfilePackExportDir
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            pack.SaveFile(dlg.FileName);
+            Log("Exported pack: " + pack.Summary() + " → " + dlg.FileName);
+            MessageBox.Show(this, "Saved:\n" + dlg.FileName + "\n\n" + pack.Summary(),
+                "Export tune pack", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    void OnImportPack(object sender, RoutedEventArgs e)
+    {
+        if (_tune is null) return;
+        if (!EnsureEulaAccepted()) return;
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import ZenLoop tune pack",
+            Filter = "ZenLoop profile pack (*.zenloop.json)|*.zenloop.json|JSON (*.json)|*.json|All files|*.*",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            var pack = ProfilePack.Parse(File.ReadAllText(dlg.FileName));
+            if (MessageBox.Show(this,
+                    "Import and overwrite saved profiles?\n\n" + pack.Summary() +
+                    "\n\nThis does not apply live settings until you click Restore last tune / Apply / Write BIOS.",
+                    "Import tune pack",
+                    MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+                return;
+
+            _tune.ApplyProfilePackFiles(pack);
+            if (pack.Cpu is not null) LoadProfileToUi(pack.Cpu);
+            if (pack.Ram is not null)
+            {
+                LoadRamToUi(pack.Ram);
+                TxtRamGuidance.Text = RamTimingGuidance.Guidance(pack.Ram);
+            }
+            Log("Imported pack: " + pack.Summary() + " ← " + dlg.FileName);
+            MessageBox.Show(this, "Profiles saved. Use Restore last tune to apply GPU+CPU session settings.",
+                "Import tune pack", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Import failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     async Task ApplyPboAsync(PersistMode persist)
@@ -749,6 +884,16 @@ public partial class MainWindow : Window
     async void OnOptimize(object sender, RoutedEventArgs e)
     {
         if (_tune is null) return;
+        if (!EnsureEulaAccepted()) return;
+        if (_last is not null)
+        {
+            var support = PlatformSupport.FromNames(_last.GpuName);
+            if (!support.AmdGpuLikely)
+            {
+                MessageBox.Show(this, support.Message, "Unsupported GPU", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+        }
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = (int)SldSeconds.Value;
         if (MessageBox.Show(this,
@@ -759,7 +904,8 @@ public partial class MainWindow : Window
                 + "4. Auto-tune per-core Curve Optimizer (with all-core confirm)\n"
                 + "5. Benchmark again and show faster / cooler / less power\n\n"
                 + $"{ZenLoop.Core.ClockSearch.DescribeGoal(goal)}\n"
-                + $"{secs}s per step\nClose games first. This takes several minutes.",
+                + $"{secs}s per step\nClose games first. This takes several minutes.\n\n"
+                + ProductIdentity.ShortDisclaimer,
                 "Optimize this PC",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
@@ -1111,6 +1257,11 @@ public partial class MainWindow : Window
         {
             BtnBenchBase.IsEnabled = !busy;
             BtnBenchNow.IsEnabled = !busy;
+        }
+        if (BtnExportPack is not null)
+        {
+            BtnExportPack.IsEnabled = !busy;
+            BtnImportPack.IsEnabled = !busy;
         }
         if (BtnPboApply is not null)
         {

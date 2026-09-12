@@ -9,8 +9,12 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationTitle>ZenLoop</ApplicationTitle>
     <Product>ZenLoop</Product>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
+    <InformationalVersion>1.1.0</InformationalVersion>
     <AssemblyName>ZenLoop</AssemblyName>
+    <Company>ZenLoop</Company>
+    <Description>One-click Optimize for AMD Ryzen + Radeon</Description>
+    <Copyright>Copyright (c) ZenLoop contributors</Copyright>
     <RootNamespace>ZenLoop.App</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>

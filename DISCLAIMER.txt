@@ -1,0 +1,19 @@
+ZENLOOP SAFETY DISCLAIMER
+
+Overclocking and undervolting are inherently risky.
+
+• Close games and save work before Optimize or stress tests.
+• ZenLoop aborts on high GPU edge / hotspot / VRAM temps and classifies WHEA / TDR-style faults,
+  but no software can guarantee hardware safety.
+• Daily profiles step one safer than the last fail — still re-test after driver or BIOS updates.
+• GPU recovery: AMD Software (Adrenalin) → Performance → Tuning → Default, or in-app Reset factory.
+• Session CPU recovery: Clear session Curve Optimizer (offsets to 0 this boot).
+• BIOS mailbox recovery: Write stock BIOS (CO=0 / stock-like PBO) then reboot — this is NOT full
+  UEFI Optimized Defaults.
+• If the PC will not POST after RAM or BIOS writes: CLR_CMOS / jumper, load Optimized Defaults,
+  re-enable EXPO/DOCP carefully.
+• Do not run MSI Afterburner (or other GPU tuners) at the same time as Adrenalin/ZenLoop GPU
+  control — controllers conflict on Radeon.
+• Keep ZenTimings or BIOS screenshots of known-good memory settings before experimenting.
+
+You use ZenLoop at your own risk.

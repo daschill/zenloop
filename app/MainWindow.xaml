@@ -19,12 +19,21 @@
                 <StackPanel Orientation="Horizontal">
                     <Border Width="5" CornerRadius="2" Background="{StaticResource Accent}" Margin="0,2,12,2"/>
                     <StackPanel>
-                        <TextBlock FontSize="22" FontWeight="Bold">ZENLOOP</TextBlock>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontSize="22" FontWeight="Bold" Text="ZENLOOP"/>
+                            <TextBlock x:Name="TxtVersion" Style="{StaticResource Label}" Margin="10,8,0,0" VerticalAlignment="Center" Text=""/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Label}" Margin="0,2,0,0"
+                                   Text="One-click Optimize for AMD Ryzen + Radeon"/>
                         <TextBlock x:Name="TxtSubtitle" Style="{StaticResource Label}" Margin="0,2,0,0"
-                                   Text="Ryzen 7 9800X3D  ·  Radeon RX 7900 XTX"/>
+                                   Text="Detecting GPU…"/>
+                        <TextBlock x:Name="TxtPlatformHint" Style="{StaticResource Label}" Margin="0,4,0,0"
+                                   Foreground="{StaticResource Warn}" Text="" TextWrapping="Wrap" MaxWidth="720"/>
                     </StackPanel>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="About" Padding="12,6" Margin="0,0,10,0" Click="OnAbout"
+                            ToolTip="Version, EULA, disclaimer, and recovery notes"/>
                     <Border x:Name="PillAdmin" CornerRadius="10" Padding="10,4" Background="#3A2410" Margin="0,0,8,0">
                         <TextBlock x:Name="TxtAdmin" Text="USER" Style="{StaticResource Label}" Foreground="{StaticResource Warn}"/>
                     </Border>
@@ -286,6 +295,9 @@
                                     <Button x:Name="BtnRamRead" Content="Read RAM" Click="OnRamRead"/>
                                     <Button Grid.Column="2" x:Name="BtnRamWrite" Content="Write RAM BIOS" Style="{StaticResource AccentButton}" Click="OnRamWrite"/>
                                 </Grid>
+                                <TextBlock x:Name="TxtRamGuidance" Style="{StaticResource Label}" Margin="0,10,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="RAM: start from EXPO, tighten slowly. ZenLoop writes primary timings via Ryzen Master; verify with ZenTimings after reboot."/>
                             </StackPanel>
                         </ScrollViewer>
                     </DockPanel>
@@ -352,6 +364,12 @@
                             <UniformGrid Columns="2" Rows="1" Margin="0,0,0,8">
                                 <Button x:Name="BtnBenchBase" Content="Bench baseline" Margin="0,0,8,0" Click="OnBenchBaseline"/>
                                 <Button x:Name="BtnBenchNow" Content="Bench current" Click="OnBenchCurrent"/>
+                            </UniformGrid>
+                            <UniformGrid Columns="2" Rows="1" Margin="0,0,0,8">
+                                <Button x:Name="BtnExportPack" Content="Export tune pack" Margin="0,0,8,0" Click="OnExportPack"
+                                        ToolTip="Save GPU + CPU PBO/CO + RAM profiles as one JSON file (Adrenalin/RM-style backup)."/>
+                                <Button x:Name="BtnImportPack" Content="Import tune pack" Click="OnImportPack"
+                                        ToolTip="Load a ZenLoop profile pack into saved profiles (does not auto-apply until you Restore / Apply)."/>
                             </UniformGrid>
                             <TextBlock x:Name="TxtBench" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
                                        Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer (all-core confirm) → tuned bench. Results stay here after Optimize."/>

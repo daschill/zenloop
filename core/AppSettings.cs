@@ -8,6 +8,11 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; }
     public bool MinimizeToTray { get; set; } = true;
 
+    /// <summary>Last accepted <see cref="ProductIdentity.EulaVersion"/>; 0 = never accepted.</summary>
+    public int AcceptedEulaVersion { get; set; }
+
+    public bool HasAcceptedCurrentEula => AcceptedEulaVersion >= ProductIdentity.EulaVersion;
+
     static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,

@@ -80,10 +80,27 @@ public sealed class AutotuneService
     public string StartupProfilePath => Path.Combine(_root, "profiles", "startup.json");
     public string CpuPboProfilePath => Path.Combine(_root, "profiles", "cpu-pbo.json");
     public string RamProfilePath => Path.Combine(_root, "profiles", "ram-timings.json");
+    public string ProfilePackExportDir => Path.Combine(_root, "profiles", "exports");
 
     public RamTimingProfile? LoadRamProfile() => RamTimingProfile.TryLoadFile(RamProfilePath);
 
     public void SaveRamProfile(RamTimingProfile p) => p.SaveFile(RamProfilePath);
+
+    public ProfilePack BuildProfilePack(string? goal = null, string? notes = null)
+        => ProfilePack.FromParts(LoadStartupProfile(), LoadCpuPboProfile(), LoadRamProfile(), goal, notes);
+
+    public void ApplyProfilePackFiles(ProfilePack pack)
+    {
+        ArgumentNullException.ThrowIfNull(pack);
+        Directory.CreateDirectory(Path.Combine(_root, "profiles"));
+        if (pack.Gpu is not null)
+            File.WriteAllText(StartupProfilePath, pack.Gpu.ToJson());
+        if (pack.Cpu is not null)
+            SaveCpuPboProfile(pack.Cpu);
+        if (pack.Ram is not null)
+            SaveRamProfile(pack.Ram);
+    }
+
     public string SettingsPath => Path.Combine(_root, "profiles", "app-settings.json");
 
     public AppSettings LoadSettings() => AppSettings.Load(SettingsPath);
