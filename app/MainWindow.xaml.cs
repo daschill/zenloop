@@ -1201,6 +1201,8 @@ public partial class MainWindow : Window
                     summary: abort,
                     pass: false,
                     abortReason: "stopped by user (Stop / cancel)");
+                try { _tune.MarkOptimizeAborted("user", "stopped by user (Stop / cancel)"); }
+                catch (Exception ex) { Log("Forensics abort write skipped: " + ex.Message); }
                 throw;
             }
         }, restoreOnCancel: true, preserveStepOnSuccess: true);

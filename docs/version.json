@@ -1,5 +1,5 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "url": "https://github.com/daschill/zenloop/releases/latest",
   "notes": "Market-best integration tip: #2\u2013#10 stacked (depth/hot-apply + packaging + curve/dram/metrics)."
 }

@@ -126,7 +126,96 @@ public static class ClockSearch
         if (scorePick && passes.Count > 0)
             best = TuneScore.PickBest(goal, passes, refThr) ?? lastGood;
 
-        return new ClockSearchResult(best, lastGood, evaluated, lastFault, passes.Count);
+        return new ClockSearchResult(best, lastGood, evaluated, lastFault, passes.Count, VoltageBumps: 0, RefinedDailyMv: null);
+    }
+
+    /// <summary>
+    /// Clock walk with VF-style voltage bump on fail (Tuning2 global voltage).
+    /// On OC fail, bump voltage by <paramref name="voltageStepMv"/> up to <paramref name="maxVoltageBumps"/>
+    /// times toward stock before pruning the climb.
+    /// </summary>
+    public static async Task<ClockSearchResult> WalkWithVoltageBumpAsync(
+        string goal,
+        IReadOnlyList<int> candidates,
+        int dailyVoltMv,
+        int stockVoltMv,
+        int voltageStepMv,
+        int maxVoltageBumps,
+        Func<int, int, Task<(bool Ok, double Throughput, double? PowerW, double? TempC, string? FailReason)>> probeAtClockAndVolt,
+        AdaptiveSearchHints? hints = null,
+        double referenceThroughput = 0)
+    {
+        hints ??= AdaptiveSearch.Defaults();
+        if (voltageStepMv < 1) voltageStepMv = VoltageSearch.DefaultStepMv;
+        if (maxVoltageBumps < 0) maxVoltageBumps = 0;
+        goal = TuneScore.NormalizeGoal(goal);
+        bool efficiency = goal is "efficiency";
+        bool scorePick = efficiency || goal is "balanced";
+
+        var evaluated = new List<int>();
+        var scores = new List<double>();
+        var passes = new List<TuneCandidate>();
+        int? lastGood = null;
+        FaultKind lastFault = FaultKind.None;
+        double refThr = referenceThroughput;
+        int bumps = 0;
+        int workingVolt = dailyVoltMv;
+
+        foreach (var c in candidates)
+        {
+            bool ok = false;
+            double thr = 0;
+            double? power = null;
+            double? temp = null;
+            string? reason = null;
+
+            for (int attempt = 0; attempt <= maxVoltageBumps; attempt++)
+            {
+                workingVolt = Math.Min(stockVoltMv, dailyVoltMv + attempt * voltageStepMv);
+                var r = await probeAtClockAndVolt(c, workingVolt).ConfigureAwait(false);
+                ok = r.Ok;
+                thr = r.Throughput;
+                power = r.PowerW;
+                temp = r.TempC;
+                reason = r.FailReason;
+                if (ok)
+                {
+                    if (attempt > 0)
+                    {
+                        bumps += attempt;
+                        dailyVoltMv = workingVolt; // raise floor for subsequent climbs
+                    }
+                    break;
+                }
+                lastFault = FaultClassifier.MostSevere(new[] { lastFault, FaultClassifier.ClassifyReason(reason) });
+                if (efficiency) break; // sparse efficiency probes — don't burn bumps
+                if (workingVolt >= stockVoltMv) break;
+            }
+
+            evaluated.Add(c);
+            if (!ok)
+            {
+                if (!efficiency) break;
+                continue;
+            }
+
+            lastGood = c;
+            if (refThr <= 0 && thr > 0) refThr = thr;
+            var cand = new TuneCandidate(c, thr, power, temp);
+            passes.Add(cand);
+            scores.Add(TuneScore.ScoreCandidate(goal, cand, refThr));
+
+            if (!efficiency && SearchConvergence.IsPlateau(scores, hints.PlateauWindow, hints.PlateauEpsilonPct))
+                break;
+            if (!efficiency && SearchConvergence.ShouldPruneClimb(scores))
+                break;
+        }
+
+        int? best = lastGood;
+        if (scorePick && passes.Count > 0)
+            best = TuneScore.PickBest(goal, passes, refThr) ?? lastGood;
+
+        return new ClockSearchResult(best, lastGood, evaluated, lastFault, passes.Count, bumps, dailyVoltMv);
     }
 
     public static string DescribeGoal(string goal) => TuneScore.NormalizeGoal(goal) switch
@@ -142,4 +231,6 @@ public sealed record ClockSearchResult(
     int? LastStableMhz,
     IReadOnlyList<int> Evaluated,
     FaultKind LastFault,
-    int PassCount);
+    int PassCount,
+    int VoltageBumps = 0,
+    int? RefinedDailyMv = null);
