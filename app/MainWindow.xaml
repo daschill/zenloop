@@ -349,7 +349,10 @@
                             <CheckBox x:Name="ChkAppAutoApply" Content="Auto-apply per-app pack when matched exe is focused" Click="OnAppAutoApplyChanged"
                                       ToolTip="Default off. When enabled, ZenLoop watches the foreground window and applies the bound tune pack (debounced; never during Optimize)."/>
                             <CheckBox x:Name="ChkStartWithWindows" Content="Start with Windows" Click="OnSettingsChanged"/>
-                            <CheckBox x:Name="ChkTray" Content="Minimize to tray" IsChecked="True" Click="OnSettingsChanged" Margin="0,0,0,12"/>
+                            <CheckBox x:Name="ChkTray" Content="Minimize to tray" IsChecked="True" Click="OnSettingsChanged"/>
+                            <CheckBox x:Name="ChkStartupUpdateCheck" Content="Check for updates on startup (silent)"
+                                      ToolTip="Optional. Default off. Uses tray balloon + log when a newer version.json is published — no modal dialog."
+                                      Click="OnSettingsChanged" Margin="0,0,0,12"/>
 
                             <UniformGrid Columns="3" Rows="3" Margin="0,0,0,10">
                                 <Button x:Name="BtnAutoGpu" Content="Auto GPU UV + OC" Style="{StaticResource AccentButton}" Margin="0,0,8,8" Click="OnAutoGpu"/>

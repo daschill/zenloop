@@ -47,8 +47,17 @@ public static class ProductIdentity
             $"{Name} {Version}\n{Tagline}\n\n{Copyright}\n{NotAffiliated}\n\n" +
             "GPU: AMD ADLX (Adrenalin).\nCPU/BIOS/RAM mailbox: AMD Ryzen Master Platform/Device.\n" +
             "No WinRing0. No Intel/NVIDIA hardware control in this release.\n\n" +
-            ShortDisclaimer;
+            ShortDisclaimer + "\n\n" +
+            RecoverySummary;
     }
+
+    /// <summary>Short recovery path shown in About; full guide is docs/RECOVERY.md (shipped next to the exe).</summary>
+    public const string RecoverySummary =
+        "Recovery: Adrenalin → Performance → Tuning → Default (or in-app Reset factory). " +
+        "Clear session Curve Optimizer (CO=0 this boot). " +
+        "BIOS Write stock is not UEFI Optimized Defaults. " +
+        "If the PC will not POST after RAM/BIOS writes: CLR_CMOS / jumper, then Optimized Defaults — " +
+        "see RECOVERY.md next to ZenLoop.exe.";
 
     public static string UnsupportedPlatformMessage(string? cpuVendor, string? gpuVendor)
     {

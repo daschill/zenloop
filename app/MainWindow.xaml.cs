@@ -154,6 +154,7 @@ public partial class MainWindow : Window
         ChkTray.IsChecked = _settings.MinimizeToTray;
         if (ChkAppAutoApply is not null)
             ChkAppAutoApply.IsChecked = _settings.AppProfileAutoApply;
+        ChkStartupUpdateCheck.IsChecked = _settings.CheckForUpdatesOnStartup;
     }
 
     void OnSettingsChanged(object sender, RoutedEventArgs e)
@@ -163,6 +164,7 @@ public partial class MainWindow : Window
         _settings.MinimizeToTray = ChkTray.IsChecked == true;
         if (ChkAppAutoApply is not null)
             _settings.AppProfileAutoApply = ChkAppAutoApply.IsChecked == true;
+        _settings.CheckForUpdatesOnStartup = ChkStartupUpdateCheck.IsChecked == true;
         _tune?.SaveSettings(_settings);
         try { WindowsStartup.SetEnabled(_settings.StartWithWindows); }
         catch (Exception ex) { Log("Start with Windows: " + ex.Message); }
@@ -184,6 +186,16 @@ public partial class MainWindow : Window
         Log(on
             ? "Per-app auto-apply enabled (foreground watch, 2.5s debounce; skipped while Optimize runs)."
             : "Per-app auto-apply disabled.");
+    }
+
+    /// <summary>Called from App startup when optional silent update check finds a newer version.</summary>
+    public void NotifySilentUpdateAvailable(UpdateChecker.Result result)
+    {
+        if (!result.UpdateAvailable) return;
+        var text = StartupUpdateCheck.FormatTrayText(result);
+        Log(text);
+        TxtFooter.Text = text.Length > 120 ? text[..120] + "…" : text;
+        _tray?.ShowBalloon(StartupUpdateCheck.TrayTitle, text);
     }
 
     async Task RefreshSmuAsync()
@@ -717,17 +729,77 @@ public partial class MainWindow : Window
         return true;
     }
 
-    void OnAbout(object sender, RoutedEventArgs e)
+    async void OnAbout(object sender, RoutedEventArgs e)
     {
         var extra = _settings.HasAcceptedCurrentEula
             ? $"\n\nEULA v{ProductIdentity.EulaVersion}: accepted."
             : $"\n\nEULA v{ProductIdentity.EulaVersion}: not accepted yet.";
+
+        var updateLine = "\n\nUpdate check: (checking…)";
+        try
+        {
+            var check = await UpdateChecker.CheckAsync(
+                ProductIdentity.Version,
+                _settings.UpdateManifestUrl);
+            updateLine = "\n\n" + check.Message;
+            if (check.UpdateAvailable)
+                Log(check.Message);
+        }
+        catch (Exception ex)
+        {
+            updateLine = "\n\nUpdate check skipped: " + ex.Message;
+        }
+
+        var recoveryPath = FindShippedRecoveryDoc();
+        var recoveryHint = recoveryPath is null
+            ? "\n\nRecovery guide not found next to the exe (expected RECOVERY.md)."
+            : "\n\nFull recovery guide: " + recoveryPath;
+
         var choice = MessageBox.Show(this,
-            ProductIdentity.AboutText() + extra + "\n\nYes = re-open EULA accept  ·  No = close",
+            ProductIdentity.AboutText() + extra + updateLine + recoveryHint +
+            "\n\nYes = re-open EULA accept  ·  No = open recovery guide  ·  Cancel = close",
             "About ZenLoop",
-            MessageBoxButton.YesNo, MessageBoxImage.Information);
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
         if (choice == MessageBoxResult.Yes)
             EnsureEulaAccepted(forcePrompt: true);
+        else if (choice == MessageBoxResult.No)
+            TryOpenRecoveryDoc(recoveryPath);
+    }
+
+    static string? FindShippedRecoveryDoc()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        foreach (var rel in new[] { "RECOVERY.md", System.IO.Path.Combine("docs", "RECOVERY.md") })
+        {
+            var path = System.IO.Path.Combine(baseDir, rel);
+            if (File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    void TryOpenRecoveryDoc(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            MessageBox.Show(this,
+                ProductIdentity.RecoverySummary + "\n\nRECOVERY.md was not found beside ZenLoop.exe. " +
+                "See docs/RECOVERY.md in the source tree.",
+                "Recovery", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Could not open recovery guide:\n" + ex.Message + "\n\n" + path,
+                "Recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     void OnExportPack(object sender, RoutedEventArgs e)

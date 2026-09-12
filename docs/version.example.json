@@ -1,0 +1,5 @@
+{
+  "version": "1.2.0",
+  "url": "https://github.com/daschill/zenloop/releases/latest",
+  "notes": "Example manifest. Ship this file as the version.json GitHub Release asset (or host at the raw path documented in PACKAGING.md)."
+}

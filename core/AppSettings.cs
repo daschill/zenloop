@@ -19,6 +19,18 @@ public sealed class AppSettings
 
     public bool HasAcceptedCurrentEula => AcceptedEulaVersion >= ProductIdentity.EulaVersion;
 
+    /// <summary>
+    /// Version manifest URL for About → update check. Empty/null uses
+    /// <see cref="UpdateChecker.DefaultManifestUrl"/> (GitHub Releases <c>version.json</c>).
+    /// </summary>
+    public string? UpdateManifestUrl { get; set; }
+
+    /// <summary>
+    /// When true, run a silent update check shortly after startup (tray/log only; no modal).
+    /// Default off so depth/About UI is not disturbed.
+    /// </summary>
+    public bool CheckForUpdatesOnStartup { get; set; }
+
     static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,

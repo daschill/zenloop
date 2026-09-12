@@ -101,8 +101,13 @@ GitHub Actions (`.github/workflows/ci.yml`) restores/builds the solution on `win
 
 ## Recover
 
+See **[docs/RECOVERY.md](docs/RECOVERY.md)** (also shipped as `RECOVERY.md` next to `ZenLoop.exe`). About → **No** opens the guide.
+
 - GPU: Adrenalin → Tuning → Default, or the in-app factory reset
+- Clear session Curve Optimizer (CO=0 this boot) — not a full UEFI reset
 - Whole system will not POST: CLR_CMOS, load Optimized Defaults, re-enable EXPO
+
+Installer scripts (unsigned Inno / MSIX) and update-check notes: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 ## License
 

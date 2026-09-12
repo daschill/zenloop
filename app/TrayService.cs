@@ -33,6 +33,22 @@ sealed class TrayService : IDisposable
         _window.Activate();
     }
 
+    /// <summary>Non-modal balloon for silent startup update notices.</summary>
+    public void ShowBalloon(string title, string text, int timeoutMs = 6000)
+    {
+        try
+        {
+            _icon.BalloonTipTitle = title;
+            _icon.BalloonTipText = text.Length > 240 ? text[..240] : text;
+            _icon.BalloonTipIcon = ToolTipIcon.Info;
+            _icon.ShowBalloonTip(timeoutMs);
+        }
+        catch
+        {
+            /* tray balloons are best-effort */
+        }
+    }
+
     public void Dispose()
     {
         _icon.Visible = false;
