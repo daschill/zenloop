@@ -1181,13 +1181,26 @@ public partial class MainWindow : Window
                 }
                 else
                     Log("Optimize finished but a baseline or current bench is missing.");
-                WriteMetricsSnapshot("optimize", goal, delta?.Summary, pass: delta is not null);
+                WriteMetricsSnapshot(
+                    "optimize",
+                    goal,
+                    delta?.Summary,
+                    pass: delta is not null,
+                    baseline: _tune.LoadBenchBaseline(),
+                    tuned: _tune.LoadBenchCurrent(),
+                    delta: delta);
             }
             catch (OperationCanceledException)
             {
                 var abort = OptimizeSummary.FormatAbort("stopped by user (Stop / cancel)");
                 Log(abort);
                 TxtStep.Text = "=== Optimize ABORT ===";
+                WriteMetricsSnapshot(
+                    "optimize",
+                    goal,
+                    summary: abort,
+                    pass: false,
+                    abortReason: "stopped by user (Stop / cancel)");
                 throw;
             }
         }, restoreOnCancel: true, preserveStepOnSuccess: true);
@@ -1195,13 +1208,42 @@ public partial class MainWindow : Window
         TryLoadCpuProfileIntoUi();
     }
 
-    void WriteMetricsSnapshot(string source, string? goal = null, string? summary = null, bool? pass = null)
+    void WriteMetricsSnapshot(
+        string source,
+        string? goal = null,
+        string? summary = null,
+        bool? pass = null,
+        BenchRun? baseline = null,
+        BenchRun? tuned = null,
+        BenchDelta? delta = null,
+        string? abortReason = null,
+        string? profilePackId = null)
     {
         try
         {
             var metrics = _last?.Metrics ?? new Dictionary<string, double?>();
-            var snap = MetricsSnapshotExport.FromMetrics(metrics, source, goal, summary, pass);
-            var path = MetricsSnapshotExport.Write(snap);
+            MetricsSnapshot snap;
+            if (string.Equals(source, "optimize", StringComparison.OrdinalIgnoreCase)
+                || baseline is not null || tuned is not null || delta is not null
+                || !string.IsNullOrWhiteSpace(abortReason))
+            {
+                snap = MetricsSnapshotExport.FromOptimize(
+                    baseline,
+                    tuned,
+                    delta,
+                    liveMetrics: metrics,
+                    goal: goal,
+                    summary: summary,
+                    pass: pass,
+                    abortReason: abortReason,
+                    profilePackId: profilePackId);
+            }
+            else
+            {
+                snap = MetricsSnapshotExport.FromMetrics(
+                    metrics, source, goal, summary, pass, abortReason: abortReason, profilePackId: profilePackId);
+            }
+            var path = MetricsSnapshotExport.Write(snap, atomic: true);
             Log($"Metrics snapshot → {path}");
         }
         catch (Exception ex)
