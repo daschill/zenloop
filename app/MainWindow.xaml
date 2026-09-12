@@ -286,9 +286,10 @@
                         <StackPanel>
                             <TextBlock FontSize="15" FontWeight="SemiBold" Text="Auto overclock / undervolt"/>
                             <TextBlock Style="{StaticResource Label}" Margin="0,2,0,12"
-                                       Text="One click: restore stock, benchmark, tune GPU + CPU, benchmark again. Shows faster / cooler / less power."/>
+                                       Text="One click: restore stock, benchmark, tune GPU + CPU (confirmed), benchmark again. Shows faster / cooler / less power."/>
                             <Button x:Name="BtnOptimize" Content="Optimize this PC" Style="{StaticResource AccentButton}"
-                                    Margin="0,0,0,12" Click="OnOptimize"/>
+                                    Margin="0,0,0,12" Click="OnOptimize"
+                                    ToolTip="Stock reset → baseline bench → GPU UV/OC → per-core CO + all-core confirm → tuned bench"/>
 
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -298,10 +299,11 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource Label}" Text="GOAL"/>
-                                    <ComboBox x:Name="CmbGoal" Margin="0,4,0,0" SelectedIndex="0">
-                                        <ComboBoxItem Content="Balanced"/>
-                                        <ComboBoxItem Content="Performance"/>
-                                        <ComboBoxItem Content="Efficiency"/>
+                                    <ComboBox x:Name="CmbGoal" Margin="0,4,0,0" SelectedIndex="0"
+                                              ToolTip="Balanced: UV + mild OC. Performance: UV + max clocks. Efficiency: UV + lower clocks for work/W.">
+                                        <ComboBoxItem Content="Balanced" ToolTip="Undervolt, then a mild core overclock (not max)."/>
+                                        <ComboBoxItem Content="Performance" ToolTip="Undervolt, then push core/VRAM clocks toward the limit."/>
+                                        <ComboBoxItem Content="Efficiency" ToolTip="Undervolt, then try stock and lower core clocks for more work/W."/>
                                     </ComboBox>
                                 </StackPanel>
                                 <StackPanel Grid.Column="2">
@@ -326,7 +328,8 @@
                                 <Button x:Name="BtnStressCpu" Content="Stress CPU" Margin="0,0,8,8" Click="OnStressCpu"/>
                                 <Button x:Name="BtnSoak" Content="Soak 3 min" Margin="0,0,0,8" Click="OnSoak"/>
                                 <Button x:Name="BtnPerCore" Content="Per-core CPU" Margin="0,0,8,0" Click="OnPerCore"/>
-                                <Button x:Name="BtnApplyProfile" Content="Apply GPU + CPU" Margin="0,0,8,0" Click="OnApplyProfile"/>
+                                <Button x:Name="BtnApplyProfile" Content="Restore last tune" Margin="0,0,8,0" Click="OnApplyProfile"
+                                        ToolTip="Re-apply saved GPU startup profile and CPU PBO (undo factory reset of a prior tune)."/>
                                 <Button x:Name="BtnCpuUnder" Content="CPU cap 95%" Margin="0" Click="OnCpuCap"/>
                             </UniformGrid>
                             <UniformGrid Columns="2" Rows="1" Margin="0,0,0,8">
@@ -334,7 +337,7 @@
                                 <Button x:Name="BtnBenchNow" Content="Bench current" Click="OnBenchCurrent"/>
                             </UniformGrid>
                             <TextBlock x:Name="TxtBench" Style="{StaticResource Label}" Margin="0,0,0,8" TextWrapping="Wrap" FontFamily="{StaticResource MonoFont}"
-                                       Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer → tuned bench. CPU PPT from Ryzen Master; GPU board power from ADLX. No extra tools."/>
+                                       Text="Click Optimize this PC. Stock bench → GPU UV+OC → per-core Curve Optimizer (all-core confirm) → tuned bench. Results stay here after Optimize."/>
                             <TextBlock x:Name="TxtCores" Style="{StaticResource Label}" Margin="0,0,0,8" Text="Per-core CO: not run yet. Failed cores need a weaker BIOS Curve Optimizer offset." TextWrapping="Wrap"/>
 
                             <Grid Margin="0,4,0,0">
@@ -343,8 +346,10 @@
                                     <ColumnDefinition Width="12"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <ProgressBar x:Name="Bar" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="2" x:Name="TxtStep" Style="{StaticResource Label}" Text="idle" VerticalAlignment="Center"/>
+                                <ProgressBar x:Name="Bar" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center"
+                                             ToolTip="Optimize progress (monotonic during a run)."/>
+                                <TextBlock Grid.Column="2" x:Name="TxtStep" Style="{StaticResource Label}" Text="idle" VerticalAlignment="Center"
+                                           MaxWidth="280" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                             </Grid>
                         </StackPanel>
                     </Border>

@@ -199,6 +199,9 @@ public sealed class AutotuneService
                 progress.Report(p with { Fraction = lo + Math.Clamp(p.Fraction, 0, 1) * (hi - lo) }));
         }
 
+        // Stock reset invalidates any mid-tune GPU progress from a prior interrupted run.
+        ClearProgress();
+
         progress?.Report(new TuneProgress("Restoring stock GPU for baseline…", 0.02, null, "stock", null));
         await Task.Run(() => _hw.Reset(), ct);
 
@@ -207,10 +210,7 @@ public sealed class AutotuneService
             progress?.Report(new TuneProgress("Session Curve Optimizer = 0 (stock CPU)…", 0.04, null, "cpu-stock", null));
             try
             {
-                var stock = seed.Clone();
-                int n = Math.Max(1, Environment.ProcessorCount);
-                stock.Cores = Enumerable.Range(0, n).Select(i => CurveOptimizerCore.FromSigned(i, 0)).ToList();
-                smu.Apply(stock, PersistMode.Session);
+                ApplySessionStockCo(smu, seed);
             }
             catch (Exception ex)
             {
@@ -222,17 +222,18 @@ public sealed class AutotuneService
         await RunSystemBenchAsync("baseline", seconds, limits, Scale(0.06, 0.22), ct);
 
         progress?.Report(new TuneProgress("Auto GPU undervolt + overclock…", 0.22, null, "gpu", null));
-        var gpu = await GpuAutotuneAsync(goal, seconds, limits, skipVram, Scale(0.22, 0.68), ct);
+        var gpu = await GpuAutotuneAsync(goal, seconds, limits, skipVram, Scale(0.22, 0.68), ct, resume: false);
         bool gpuOk = gpu.TryGetValue("ok", out var okObj) && okObj is true;
         if (!gpuOk)
             progress?.Report(new TuneProgress("GPU tune: " + gpu.GetValueOrDefault("reason"), 0.68, null, "gpu", false));
 
+        CpuPboProfile? cpuProfile = null;
         if (smu is { IsAvailable: true })
         {
             progress?.Report(new TuneProgress("Auto-tune per-core Curve Optimizer…", 0.68, null, "cpu", null));
             try
             {
-                await CpuPboAutotuneAsync(smu, seed, Math.Max(8, seconds / 2), limits, Scale(0.68, 0.86), ct);
+                cpuProfile = await CpuPboAutotuneAsync(smu, seed, Math.Max(8, seconds / 2), limits, Scale(0.68, 0.86), ct);
             }
             catch (Exception ex)
             {
@@ -242,8 +243,13 @@ public sealed class AutotuneService
 
         progress?.Report(new TuneProgress("Benchmarking tuned system…", 0.86, null, "current", null));
         await RunSystemBenchAsync("current", seconds, limits, Scale(0.86, 1.0), ct);
-        progress?.Report(new TuneProgress("Done.", 1, null, "done", true));
-        return CompareSavedBenches();
+        var delta = CompareSavedBenches();
+        TuneSettings? winner = gpu.TryGetValue("winner", out var wObj) && wObj is TuneSettings w ? w : null;
+        var summary = OptimizeSummary.FormatPostTune(
+            delta, gpuOk, gpu.GetValueOrDefault("reason")?.ToString(),
+            winner?.VoltageMv, winner?.MaxMhz, winner?.VramMhz, cpuProfile);
+        progress?.Report(new TuneProgress(summary, 1, null, "done", true));
+        return delta;
     }
 
     public BenchDelta? CompareSavedBenches()
@@ -348,13 +354,36 @@ public sealed class AutotuneService
         return results;
     }
 
+    public bool HasProgress(string? goal = null)
+    {
+        var state = LoadProgress();
+        if (state is null) return false;
+        if (goal is null) return true;
+        return string.Equals(state.Goal, goal, StringComparison.OrdinalIgnoreCase)
+               && !string.IsNullOrEmpty(state.LastCompletedStep);
+    }
+
+    public void ClearAutotuneProgress() => ClearProgress();
+
+    public void RestoreSessionCpuStock(SmuService smu, CpuPboProfile seed)
+        => ApplySessionStockCo(smu, seed);
+
+    static void ApplySessionStockCo(SmuService smu, CpuPboProfile seed)
+    {
+        var stock = seed.Clone();
+        int n = Math.Max(1, Environment.ProcessorCount);
+        stock.Cores = Enumerable.Range(0, n).Select(i => CurveOptimizerCore.FromSigned(i, 0)).ToList();
+        smu.Apply(stock, PersistMode.Session);
+    }
+
     public async Task<Dictionary<string, object?>> GpuAutotuneAsync(
         string goal,
         int seconds,
         Limits limits,
         bool skipVram,
         IProgress<TuneProgress>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool resume = true)
     {
         void Log(string msg, double frac, Dictionary<string, double?>? m = null, string? step = null, bool? ok = null)
             => progress?.Report(new TuneProgress(msg, frac, m, step, ok));
@@ -379,7 +408,7 @@ public sealed class AutotuneService
         if (skipVram)
             planned.RemoveAll(s => s is "vram" or "fast-timing");
 
-        var state = LoadProgress();
+        var state = resume ? LoadProgress() : null;
         if (state is null || !string.Equals(state.Goal, goal, StringComparison.OrdinalIgnoreCase))
         {
             state = new AutotuneProgressFile
@@ -396,10 +425,28 @@ public sealed class AutotuneService
         else
             planned = state.PlannedSteps.Count > 0 ? state.PlannedSteps : planned;
 
-        var remaining = ResumePlanner.RemainingSteps(planned, state.LastCompletedStep);
+        var remaining = ResumePlanner.RemainingStepsIfStockMatches(
+            planned, state.LastCompletedStep,
+            stockVolt, stockClock, stockVram,
+            state.StockVolt, state.StockClock, state.StockVram);
+        if (remaining.Count == planned.Count && !string.IsNullOrEmpty(state.LastCompletedStep))
+        {
+            // Stock fingerprint mismatch — discard stale resume state.
+            state.LastCompletedStep = null;
+            state.DailyVoltage = null;
+            state.LastGoodClock = null;
+            state.LastGoodVram = null;
+            state.StockVolt = stockVolt;
+            state.StockClock = stockClock;
+            state.StockVram = stockVram;
+            state.StockMin = stockMin;
+            state.StockPower = stockPower;
+            Log("Progress invalidated (stock GPU changed) — restarting plan", 0.03);
+        }
         Log(remaining.Count == planned.Count
-            ? "Starting auto-tune"
+            ? $"Starting auto-tune ({ClockSearch.DescribeGoal(goal)})"
             : $"Resuming after '{state.LastCompletedStep}' → next '{(remaining.Count == 0 ? "done" : remaining[0])}'", 0.04);
+        Log(OptimizeSummary.PhaseChecklist(planned, state.LastCompletedStep, remaining.Count > 0 ? remaining[0] : null), 0.045);
 
         TuneSettings BaseAt(int volt, int clock, int vram, bool fast = false) =>
             new(clock, stockMin, volt, vram, fast, stockPower, PerformanceFan);
@@ -444,56 +491,59 @@ public sealed class AutotuneService
         if (Need("voltage"))
         {
             Log("Binary voltage search…", 0.15);
-            var asc = VoltageSearch.LinearCandidates(stockVolt, voltLo, VoltageSearch.DefaultStepMv).OrderBy(v => v).ToList();
-            int lo = 0, hi = asc.Count - 1;
-            int? minPass = null, maxFail = null;
-            int evaluated = 0;
-            while (lo <= hi)
-            {
-                int mid = lo + (hi - lo) / 2;
-                int v = asc[mid];
-                evaluated++;
-                var probe = await ApplyAndTest($"uv-{v}mV", BaseAt(v, stockClock, stockVram), 0.2);
-                if (probe.Ok)
+            int probe = 0;
+            int probeTotalHint = Math.Max(3, (int)Math.Ceiling(Math.Log2(Math.Max(2, VoltageSearch.LinearCandidates(stockVolt, voltLo, VoltageSearch.DefaultStepMv).Count))) + 1);
+            var found = await VoltageSearch.FindMinStableAsync(
+                stockVolt, voltLo, VoltageSearch.DefaultStepMv, voltLo, voltHi,
+                async v =>
                 {
-                    minPass = v;
-                    hi = mid - 1;
-                }
-                else
+                    probe++;
+                    Log($"Voltage probe {probe}/≈{probeTotalHint}: {v} mV", 0.15 + 0.25 * Math.Min(1, probe / (double)Math.Max(1, probeTotalHint)));
+                    var res = await ApplyAndTest($"uv-{v}mV", BaseAt(v, stockClock, stockVram), 0.2);
+                    return res.Ok;
+                },
+                VoltageSearch.DefaultMarginMv);
+
+            dailyVolt = found.DailyMv;
+            if (found.UsedLinearFallback)
+                Log("Voltage oracle non-monotonic — used linear fallback from stock.", 0.42);
+
+            Log($"Confirming daily {dailyVolt} mV…", 0.43);
+            dailyVolt = await VoltageSearch.ConfirmDailyAsync(
+                dailyVolt, stockVolt, VoltageSearch.DefaultStepMv, voltLo, voltHi,
+                async v =>
                 {
-                    maxFail = maxFail is int mf ? Math.Max(mf, v) : v;
-                    lo = mid + 1;
-                }
-            }
-            dailyVolt = minPass ?? stockVolt;
-            if (maxFail is int fail)
-                dailyVolt = Math.Max(dailyVolt, VoltageSearch.DailyVoltageAfterFail(fail, VoltageSearch.DefaultMarginMv, voltLo, voltHi));
-            dailyVolt = Math.Clamp(dailyVolt, voltLo, voltHi);
+                    var res = await ApplyAndTest($"daily-{v}mV", BaseAt(v, stockClock, stockVram), 0.44);
+                    return res.Ok;
+                });
+
             state.DailyVoltage = dailyVolt;
-            Log($"Voltage search: {evaluated} probes (binary). Daily {dailyVolt} mV (margin {VoltageSearch.DefaultMarginMv} mV above fail).", 0.45);
+            Log(
+                $"Voltage search: {found.Evaluated.Count} probes{(found.UsedLinearFallback ? " (linear)" : " (binary)")}. Daily {dailyVolt} mV (margin {VoltageSearch.DefaultMarginMv} mV, confirmed).",
+                0.45);
             await Complete("voltage");
         }
 
         int lastGoodClock = state.LastGoodClock ?? stockClock;
         if (Need("clock"))
         {
-            if (goal != "efficiency")
+            var candidates = ClockSearch.Candidates(goal, stockClock, lastGoodClock, clockLo, clockHi, stepC);
+            if (goal.Equals("efficiency", StringComparison.OrdinalIgnoreCase)
+                || goal.Equals("eff", StringComparison.OrdinalIgnoreCase))
             {
-                var c = lastGoodClock + stepC;
-                while (c <= clockHi)
+                foreach (var c in candidates)
                 {
-                    var res = await ApplyAndTest($"oc-{c}MHz@{dailyVolt}mV", BaseAt(dailyVolt, c, stockVram), 0.55);
-                    if (!res.Ok) break;
-                    lastGoodClock = c;
-                    c += stepC;
+                    var res = await ApplyAndTest($"eff-{c}MHz@{dailyVolt}mV", BaseAt(dailyVolt, c, stockVram), 0.55);
+                    if (res.Ok) lastGoodClock = c;
                 }
             }
             else
             {
-                foreach (var c in new[] { stockClock, Math.Max(clockLo, stockClock - 100), Math.Max(clockLo, stockClock - 200) }.Distinct())
+                foreach (var c in candidates)
                 {
-                    var res = await ApplyAndTest($"eff-{c}MHz@{dailyVolt}mV", BaseAt(dailyVolt, c, stockVram), 0.55);
-                    if (res.Ok) lastGoodClock = c;
+                    var res = await ApplyAndTest($"oc-{c}MHz@{dailyVolt}mV", BaseAt(dailyVolt, c, stockVram), 0.55);
+                    if (!res.Ok) break;
+                    lastGoodClock = c;
                 }
             }
             state.LastGoodClock = lastGoodClock;
@@ -593,7 +643,8 @@ public sealed class AutotuneService
             throw new HwException(applied.Error ?? "PBO session apply failed (per-core Curve Optimizer not written)");
 
         var current = new int[n];
-        var profile = await CurveOptimizerSearch.SearchAsync(
+        int probesDone = 0;
+        var detailed = await CurveOptimizerSearch.SearchDetailedAsync(
             n,
             async (core, signedOffset) =>
             {
@@ -605,15 +656,38 @@ public sealed class AutotuneService
                 var r = smu.Apply(probe, PersistMode.Session);
                 if (!r.SessionApplied || !r.CoWritten)
                     return false;
+                probesDone++;
                 progress?.Report(new TuneProgress(
-                    $"Core {core} Curve Optimizer {signedOffset}",
-                    0.1 + 0.8 * (core / (double)n),
+                    $"Core {core + 1}/{n} Curve Optimizer {signedOffset} (probe {probesDone})",
+                    0.05 + 0.7 * (core / (double)n),
                     null, $"co-{core}", null));
                 var stress = await StressAsync("cpu", Math.Max(8, seconds), limits, progress, ct, "core", core);
                 if (stress.Ok) current[core] = signedOffset;
                 return stress.Ok;
             },
             seed.PptWatts, seed.TdcAmps, seed.EdcAmps, seed.BoostOverrideMhz, seed.Scalar);
+
+        var profile = detailed.Profile;
+        progress?.Report(new TuneProgress(
+            $"Per-core search done ({detailed.ProbeCount} probes). All-core confirmation…",
+            0.78, null, "co-confirm", null));
+
+        profile = await CurveOptimizerSearch.ConfirmAllCoresAsync(
+            profile,
+            async offsets =>
+            {
+                ct.ThrowIfCancellationRequested();
+                var probe = seed.Clone();
+                probe.Cores = offsets.Select((off, i) => CurveOptimizerCore.FromSigned(i, off)).ToList();
+                var r = smu.Apply(probe, PersistMode.Session);
+                if (!r.SessionApplied || !r.CoWritten)
+                    return false;
+                progress?.Report(new TuneProgress(
+                    "All-core Curve Optimizer soak…",
+                    0.85, null, "co-all", null));
+                var stress = await StressAsync("cpu", Math.Max(12, seconds), limits, progress, ct, "all");
+                return stress.Ok;
+            });
 
         var final = smu.Apply(profile, PersistMode.Session);
         if (!final.SessionApplied || !final.CoWritten)

@@ -124,7 +124,17 @@ public sealed class BenchDelta
     public string Summary => FormatSummary(this);
 
     public static string FormatSummary(BenchDelta d)
-        => $"Faster {d.SpeedPct:+0.0;-0.0}%  ·  {d.TempDeltaC:+0.0;-0.0} C  ·  {d.PowerDeltaW:+0.0;-0.0} W  ·  efficiency {d.EfficiencyPct:+0.0;-0.0}%";
+    {
+        var parts = new List<string> { $"Faster {d.SpeedPct:+0.0;-0.0}%" };
+        if (d.HasTemp)
+            parts.Add($"{d.TempDeltaC:+0.0;-0.0} C");
+        if (d.HasPower)
+        {
+            parts.Add($"{d.PowerDeltaW:+0.0;-0.0} W");
+            parts.Add($"efficiency {d.EfficiencyPct:+0.0;-0.0}%");
+        }
+        return string.Join("  ·  ", parts);
+    }
 
     public string Report(BenchRun? baseline = null, BenchRun? current = null)
     {

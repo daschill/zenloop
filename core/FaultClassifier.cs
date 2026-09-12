@@ -15,20 +15,19 @@ public static class FaultClassifier
         if (provider.Contains("WHEA", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        if (e.Id is 18 or 19 or 47 && provider.Contains("WHEA", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Display driver stopped responding (TDR)
+        // Display driver stopped responding (TDR) — require Display family or TDR wording.
         if (e.Id == 4101)
+        {
+            if (provider.Equals("Display", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (LooksLikeDisplayTimeout(message))
+                return true;
+        }
+
+        if (provider.Equals("Display", StringComparison.OrdinalIgnoreCase) && e.Id is 1001)
             return true;
 
-        if (provider.Equals("Display", StringComparison.OrdinalIgnoreCase) && e.Id is 4101 or 1001)
-            return true;
-
-        if (message.Contains("Display driver", StringComparison.OrdinalIgnoreCase)
-            && (message.Contains("stopped responding", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("recovered", StringComparison.OrdinalIgnoreCase)))
+        if (LooksLikeDisplayTimeout(message))
             return true;
 
         if (message.Contains("WHEA", StringComparison.OrdinalIgnoreCase)
@@ -40,4 +39,11 @@ public static class FaultClassifier
 
     public static string Describe(FaultEvent e)
         => $"{e.Provider} id={e.Id}: {(e.Message ?? "").Trim()}";
+
+    static bool LooksLikeDisplayTimeout(string message)
+        => message.Contains("Display driver", StringComparison.OrdinalIgnoreCase)
+           && (message.Contains("stopped responding", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("recovered", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("TDR", StringComparison.OrdinalIgnoreCase));
 }

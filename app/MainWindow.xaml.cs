@@ -621,12 +621,29 @@ public partial class MainWindow : Window
     async void OnReset(object sender, RoutedEventArgs e)
     {
         if (_hw is null) return;
-        if (MessageBox.Show(this, "Restore AMD factory GPU tuning (Adrenalin Default)?", "ZenLoop",
+        var alsoCpu = _smu is { IsAvailable: true };
+        var msg = alsoCpu
+            ? "Restore AMD factory GPU tuning (Adrenalin Default) and clear session Curve Optimizer to 0?"
+            : "Restore AMD factory GPU tuning (Adrenalin Default)?";
+        if (MessageBox.Show(this, msg, "ZenLoop",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
         await RunExclusive("Resetting to factory…", async ct =>
         {
             await Task.Run(() => _hw.Reset(), ct);
+            _tune?.ClearAutotuneProgress();
+            if (alsoCpu && _smu is not null && _tune is not null)
+            {
+                try
+                {
+                    _tune.RestoreSessionCpuStock(_smu, UiProfile());
+                    Log("Session Curve Optimizer cleared to 0.");
+                }
+                catch (Exception ex)
+                {
+                    Log("CPU stock session clear skipped: " + ex.Message);
+                }
+            }
             Log("Factory GPU tuning restored.");
         });
         await RefreshInfoAsync();
@@ -642,9 +659,10 @@ public partial class MainWindow : Window
                 + "1. Restore stock GPU (and session Curve Optimizer = 0 if SMU is live)\n"
                 + "2. Benchmark stock (CPU + RAM + GPU)\n"
                 + "3. Auto undervolt/overclock the GPU\n"
-                + "4. Auto-tune per-core Curve Optimizer\n"
+                + "4. Auto-tune per-core Curve Optimizer (with all-core confirm)\n"
                 + "5. Benchmark again and show faster / cooler / less power\n\n"
-                + $"Goal: {goal}  ·  {secs}s per step\nClose games first. This takes several minutes.",
+                + $"{ZenLoop.Core.ClockSearch.DescribeGoal(goal)}\n"
+                + $"{secs}s per step\nClose games first. This takes several minutes.",
                 "Optimize this PC",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
@@ -655,8 +673,8 @@ public partial class MainWindow : Window
         {
             var progress = new Progress<TuneProgress>(p =>
             {
-                Bar.Value = p.Fraction;
-                TxtStep.Text = p.StepName ?? p.Message;
+                Bar.Value = Math.Max(Bar.Value, p.Fraction);
+                TxtStep.Text = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
                 Log(p.Message);
                 if (p.Metrics is not null && _last is not null)
                     ApplyMetrics(_last with { Metrics = p.Metrics });
@@ -672,7 +690,7 @@ public partial class MainWindow : Window
             }
             else
                 Log("Optimize finished but a baseline or current bench is missing.");
-        }, restoreOnCancel: true);
+        }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
         TryLoadCpuProfileIntoUi();
     }
@@ -682,9 +700,25 @@ public partial class MainWindow : Window
         if (_tune is null) return;
         var goal = ((ComboBoxItem)CmbGoal.SelectedItem).Content?.ToString()?.ToLowerInvariant() ?? "balanced";
         var secs = (int)SldSeconds.Value;
+
+        bool resume = true;
+        if (_tune.HasProgress(goal))
+        {
+            var choice = MessageBox.Show(this,
+                "An incomplete GPU auto-tune was found.\n\nYes = resume where it left off\nNo = start fresh\nCancel = abort",
+                "Resume GPU tune?",
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (choice == MessageBoxResult.Cancel) return;
+            if (choice == MessageBoxResult.No)
+            {
+                _tune.ClearAutotuneProgress();
+                resume = false;
+            }
+        }
+
         if (MessageBox.Show(this,
                 "This changes live GPU clocks and voltage.\nClose games first.\n\n"
-                + $"Goal: {goal}\n{secs}s per step.\n\nContinue?",
+                + $"{ZenLoop.Core.ClockSearch.DescribeGoal(goal)}\n{secs}s per step.\n\nContinue?",
                 "Auto GPU undervolt + overclock",
                 MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
@@ -694,16 +728,17 @@ public partial class MainWindow : Window
         {
             var progress = new Progress<TuneProgress>(p =>
             {
-                Bar.Value = p.Fraction;
-                TxtStep.Text = p.StepName ?? p.Message;
+                Bar.Value = Math.Max(Bar.Value, p.Fraction);
+                TxtStep.Text = string.IsNullOrWhiteSpace(p.Message) ? (p.StepName ?? "") : p.Message.Split('\n')[0];
                 Log(p.Message);
                 if (p.Metrics is not null && _last is not null)
                     ApplyMetrics(_last with { Metrics = p.Metrics });
             });
-            var result = await _tune.GpuAutotuneAsync(goal, secs, limits, ChkSkipVram.IsChecked == true, progress, ct);
+            var result = await _tune.GpuAutotuneAsync(goal, secs, limits, ChkSkipVram.IsChecked == true, progress, ct, resume);
             var ok = result.TryGetValue("ok", out var o) && o is true;
             Log(ok ? "Auto-tune finished. Profile saved." : "Auto-tune stopped: " + result.GetValueOrDefault("reason"));
-        }, restoreOnCancel: true);
+            TxtStep.Text = ok ? "GPU tune saved" : "GPU tune stopped";
+        }, restoreOnCancel: true, preserveStepOnSuccess: true);
         await RefreshInfoAsync();
     }
 
@@ -754,7 +789,7 @@ public partial class MainWindow : Window
         var cpu = _tune.LoadCpuPboProfile();
         if (gpu is null && cpu is null)
         {
-            MessageBox.Show(this, "No saved profiles yet. Run Auto GPU UV + OC and/or apply CPU PBO first.", "ZenLoop",
+            MessageBox.Show(this, "No saved profiles yet. Run Optimize or Auto GPU UV + OC first.", "ZenLoop",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -891,7 +926,7 @@ public partial class MainWindow : Window
 
     void OnClearLog(object sender, RoutedEventArgs e) => TxtLog.Clear();
 
-    async Task RunExclusive(string status, Func<CancellationToken, Task> work, bool restoreOnCancel = false)
+    async Task RunExclusive(string status, Func<CancellationToken, Task> work, bool restoreOnCancel = false, bool preserveStepOnSuccess = false)
     {
         if (_busy) return;
         _busy = true;
@@ -901,31 +936,62 @@ public partial class MainWindow : Window
         TxtFooter.Text = status;
         TxtStep.Text = status;
         Log(status);
+        string? successStep = null;
         try
         {
             await work(_cts.Token);
+            if (preserveStepOnSuccess)
+                successStep = TxtStep.Text;
         }
         catch (OperationCanceledException)
         {
             Log("Stopped.");
-            if (restoreOnCancel && _hw is not null)
+            if (restoreOnCancel)
             {
-                try { await Task.Run(() => _hw.Reset()); Log("Factory restored after stop."); }
-                catch (Exception ex) { Log("Reset after stop failed: " + ex.Message); }
+                try
+                {
+                    if (_hw is not null)
+                    {
+                        await Task.Run(() => _hw.Reset());
+                        Log("Factory GPU restored after stop.");
+                    }
+                    _tune?.ClearAutotuneProgress();
+                    if (_smu is { IsAvailable: true } && _tune is not null)
+                    {
+                        _tune.RestoreSessionCpuStock(_smu, UiProfile());
+                        Log("Session Curve Optimizer cleared to 0 after stop.");
+                    }
+                }
+                catch (Exception ex) { Log("Restore after stop failed: " + ex.Message); }
             }
+            successStep = "stopped";
         }
         catch (Exception ex)
         {
             Log("ERROR " + ex.Message);
             MessageBox.Show(this, ex.Message, "ZenLoop", MessageBoxButton.OK, MessageBoxImage.Error);
+            successStep = "error";
         }
         finally
         {
             _busy = false;
             _cts.Dispose();
             _cts = null;
-            Bar.Value = 0;
-            TxtStep.Text = "idle";
+            if (successStep is not null && preserveStepOnSuccess && successStep is not "stopped" and not "error")
+            {
+                Bar.Value = 1;
+                TxtStep.Text = successStep;
+            }
+            else if (successStep is "stopped" or "error")
+            {
+                Bar.Value = 0;
+                TxtStep.Text = successStep;
+            }
+            else
+            {
+                Bar.Value = 0;
+                TxtStep.Text = "idle";
+            }
             SetBusyUi(false);
             SetStatus("LIVE", true);
         }
