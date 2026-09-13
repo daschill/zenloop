@@ -101,3 +101,5 @@ MSIX logos live in [`scripts/msix-assets/`](../scripts/msix-assets/) (branded pl
 ## Prerequisites on the target PC
 
 Primary path: AMD Software (Adrenalin) and AMD Ryzen Master. Multi-vendor detect (Intel/NVIDIA) shows a capability matrix; Apply only when a public signed API resolves. ZenLoop detects missing installs and shows guidance.
+
+End-user first run: [`GETTING-STARTED.md`](./GETTING-STARTED.md).
