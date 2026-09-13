@@ -45,7 +45,7 @@ $recovery = Join-Path $Root "docs\RECOVERY.md"
 if (Test-Path $recovery) {
     Copy-Item $recovery (Join-Path $out "RECOVERY.md") -Force
 }
-foreach ($doc in @("METRICS-EXPORT.md", "RTSS-OSD.md", "UV-BAKEOFF.md")) {
+foreach ($doc in @("GETTING-STARTED.md", "METRICS-EXPORT.md", "RTSS-OSD.md", "UV-BAKEOFF.md", "CURVE-SHAPER.md")) {
     $src = Join-Path $Root "docs\$doc"
     if (Test-Path $src) {
         Copy-Item $src (Join-Path $out $doc) -Force
@@ -76,8 +76,10 @@ resolves (e.g. NVAPI power policies). No WinRing0 / raw SMU. Never fake Apply su
 Code signing: unsigned by default. If SIGNING_CERT_* secrets are set, publish.ps1 runs
 scripts\sign-artifacts.ps1 (see docs\CODE-SIGNING.md). SmartScreen may warn on unsigned builds.
 
+First run: GETTING-STARTED.md (Adrenalin + Ryzen Master, Optimize, Curve Shaper limits).
 Recovery: see RECOVERY.md (Adrenalin Default, clear CO, CLR_CMOS). About -> No opens the guide.
 RTSS OSD: RTSS-OSD.md. Metrics JSON: METRICS-EXPORT.md. UV bake-off: UV-BAKEOFF.md.
+Curve Shaper: CURVE-SHAPER.md (export-found ≠ CanApply; never invent bands).
 Optional installers: scripts\pack-installer.ps1 (Inno / MSIX). Update check: About dialog.
 "@
 Set-Content -Path (Join-Path $out "README.txt") -Value $readme -Encoding UTF8

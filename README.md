@@ -4,6 +4,8 @@ Windows app that auto undervolts and overclocks **AMD Ryzen + Radeon**, then sho
 
 **Supported entry:** `ZenLoop.exe` (C# WPF). Publish with `publish.ps1`, or use `ZenLoop-UI.cmd` from a build tree. The Python CLI (`zenloop.cmd` / `python -m zenloop`) is **deprecated** and kept only for legacy helper debugging — do not use it as the daily product path.
 
+**First run:** see [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) (Adrenalin + Ryzen Master, Optimize, Curve Shaper limits, publish/pack, optional EV signing).
+
 Download, double-click `ZenLoop.exe`, approve Administrator once, accept the first-run safety/EULA prompt, click **Optimize this PC**. No HWiNFO, Python, or extra tuners required for the WPF flow.
 
 Export/Import **tune pack** saves GPU + CPU PBO/CO + RAM profiles as one JSON backup (Adrenalin/RM-style). **Multi-vendor:** Intel/NVIDIA are detected and shown in a capability matrix; Apply only runs when a public signed API resolves (e.g. NVAPI power policies via `nvapi64.dll`). No WinRing0 / raw SMU. Never fake Apply success.
