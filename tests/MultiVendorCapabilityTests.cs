@@ -29,8 +29,36 @@ public class MultiVendorCapabilityTests
         Assert.Contains(matrix.AmdCpu.Features, f => f.Feature == "SessionPBO" && f.CanApply);
         Assert.Contains(matrix.AmdGpu.Features, f => f.Feature == "SessionClockVoltage" && f.CanApply);
         Assert.Contains(matrix.AmdCpu.Features, f => f.Feature == "BoostOverride" && !f.CanApply);
+        Assert.Contains(matrix.AmdCpu.Features, f => f.Feature == "CurveShaper" && !f.CanApply && !f.Detected);
         Assert.Contains("no-apply", matrix.FormatForUi());
         Assert.Contains("AMD CPU", matrix.OneLineSummary());
+    }
+
+    [Fact]
+    public void Matrix_curve_shaper_export_found_without_abi_is_detect_only()
+    {
+        var caps = WindowsControlSurface.FromCpuInfoJson(
+            """
+            {"ok":true,"elevated":true,"driver_running":true,"supported_processor":true,
+             "capabilities":{"session_pbo":true,"session_co":true,"bios_pbo":true,"bios_co":true,
+               "bios_ram":true,"curve_shaper":false,"curve_shaper_export_found":true,
+               "curve_shaper_note":"Curve Shaper C export found: GetCurveShaper (ABI not published)",
+               "curve_shaper_probe":{"found":true,"platform_exports":10,"device_exports":10,"named_hits":1,"pe_hits":0,
+                 "match":"GetCurveShaper","match_dll":"Platform.dll","abi_published":false}}}
+            """);
+
+        Assert.True(caps.CurveShaperExportFound);
+        Assert.False(caps.CurveShaper);
+
+        var matrix = MultiVendorCapabilityMatrix.Build(
+            "AMD Radeon RX 7900 XTX",
+            "AMD Ryzen 7 9800X3D",
+            caps);
+
+        var cs = Assert.Single(matrix.AmdCpu.Features, f => f.Feature == "CurveShaper");
+        Assert.True(cs.Detected);
+        Assert.False(cs.CanApply);
+        Assert.Contains("ABI", cs.Reason!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

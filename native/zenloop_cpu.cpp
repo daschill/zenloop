@@ -684,6 +684,12 @@ static CurveShaperProbe ProbeCurveShaperExports(HMODULE platform, HMODULE device
         "?SetCurveShaper@@YAHH@Z",
         "?GetCurveShaperParameters@@YAHPEAX@Z",
         "?SetCurveShaperParameters@@YAHPEAX@Z",
+        "?EnableCurveShaper@@YAH_N@Z",
+        "?DisableCurveShaper@@YAHXZ",
+        "?GetCurveShaperBands@@YAHPEAX@Z",
+        "?SetCurveShaperBands@@YAHPEAX@Z",
+        "?ApplyCurveShaper@@YAHXZ",
+        "?QueryCurveShaper@@YAHPEAX@Z",
         nullptr
     };
     for (int i = 0; kCsNames[i]; i++) {
@@ -728,10 +734,17 @@ static CurveShaperProbe ProbeCurveShaperExports(HMODULE platform, HMODULE device
     return p;
 }
 
+// abi_published stays false until AMD documents a callable C calling convention for CS.
+// Export-found alone must NEVER enable Apply (unknown ABI = crash risk / invented bands).
+static constexpr bool kCurveShaperAbiPublished = false;
+
 static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, bool drvOk, bool supported,
                              HMODULE platform, HMODULE device) {
     auto cs = ProbeCurveShaperExports(platform, device);
-    bool curveShaper = cs.found;
+    bool exportFound = cs.found;
+    bool abiPublished = kCurveShaperAbiPublished;
+    // Can-apply flag: only when export exists AND published ABI is wired.
+    bool curveShaper = exportFound && abiPublished;
 
     j.key("capabilities");
     Json c;
@@ -742,6 +755,7 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
     c.boolean("bios_co", biosBound);
     c.boolean("bios_ram", biosBound);
     c.boolean("curve_shaper", curveShaper);
+    c.boolean("curve_shaper_export_found", exportFound);
     c.boolean("boost_override", false);
     c.boolean("manual_all_core_oc", false);
     c.boolean("gpu_bios_persist", false);
@@ -749,10 +763,13 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
     c.boolean("bios_restore_full_uefi", false);
     c.boolean("requires_reboot_after_bios", true);
     c.boolean("supported_processor", supported);
-    if (curveShaper) {
+    if (exportFound && !abiPublished) {
         c.str("curve_shaper_note",
               std::string("Curve Shaper C export found: ") + cs.match + " in " + cs.matchDll
-              + " (ABI not published — ZenLoop will not invent band writes)");
+              + " (ABI not published — ZenLoop will not invent band writes; Apply stays disabled)");
+    } else if (curveShaper) {
+        c.str("curve_shaper_note",
+              std::string("Curve Shaper C export ready: ") + cs.match + " in " + cs.matchDll);
     } else {
         c.str("curve_shaper_note",
               "no Platform.dll/Device.dll Curve Shaper C export (exhaustive named+PE probe; "
@@ -774,7 +791,7 @@ static void EmitCapabilities(Json& j, bool rmOk, bool coBound, bool biosBound, b
             pr.null("match");
             pr.null("match_dll");
         }
-        pr.boolean("abi_published", false);
+        pr.boolean("abi_published", abiPublished);
         pr.str("alternative", "Use signed PBO + Curve Optimizer; see docs/CURVE-SHAPER.md");
         pr.endObj();
         return pr.str();
@@ -1041,11 +1058,22 @@ int main(int argc, char** argv) {
             WriteOut(j.str());
             return 1;
         }
-        // Export present but AMD has not published a C ABI — refuse invented band calls.
+        if (!kCurveShaperAbiPublished) {
+            // Export present but AMD has not published a C ABI — refuse invented band calls.
+            j.str("error",
+                  std::string("Curve Shaper export matched (") + cs.match + " in " + cs.matchDll
+                  + ") but no published C ABI — refusing " + cmd
+                  + " (BiosWriteGuard: never invent band writes). Use Ryzen Master GUI or PBO/CO.");
+            j.null("curve_shaper");
+            j.endObj();
+            WriteOut(j.str());
+            return 1;
+        }
+        // Future: bind typed GetProcAddress for published ABI, then implement real cs-read/cs-apply.
+        // Until AMD documents signatures, this branch is unreachable (kCurveShaperAbiPublished=false).
         j.str("error",
-              std::string("Curve Shaper export matched (") + cs.match + " in " + cs.matchDll
-              + ") but no published C ABI — refusing " + cmd
-              + " (BiosWriteGuard: never invent band writes). Use Ryzen Master GUI or PBO/CO.");
+              "Curve Shaper ABI flag is set but typed call stubs are not wired yet — refusing "
+              + cmd + " (no fake success)");
         j.null("curve_shaper");
         j.endObj();
         WriteOut(j.str());

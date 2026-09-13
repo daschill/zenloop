@@ -73,7 +73,14 @@ public static class CurveShaperSupport
 
     public const string SignatureUnknownNote =
         "A Curve Shaper-related export was found, but AMD has not published a C calling convention. "
-        + "ZenLoop refuses to call unknown ABIs (no invented band writes).";
+        + "ZenLoop refuses to call unknown ABIs (no invented band writes). Apply stays disabled.";
+
+    public const string EmptyBandsRefuseNote =
+        "Curve Shaper Apply refused: no band offsets supplied and no invented defaults. "
+        + "Read live bands first, or use signed PBO + Curve Optimizer.";
+
+    public const string PackRefuseShort =
+        "Pack Curve Shaper section ignored for live apply (no published C ABI).";
 
     /// <summary>Named C exports probed by zenloop-cpu (plus PE export-table substring scan).</summary>
     public static IReadOnlyList<string> ProbedExportNames { get; } =
@@ -87,6 +94,16 @@ public static class CurveShaperSupport
         "ReadCurveShaper", "WriteCurveShaper",
         "GetCurveShaperOffset", "SetCurveShaperOffset",
         "ApplyCurveShaper", "QueryCurveShaper",
+        "?GetCurveShaper@@YAHXZ",
+        "?SetCurveShaper@@YAHH@Z",
+        "?GetCurveShaperParameters@@YAHPEAX@Z",
+        "?SetCurveShaperParameters@@YAHPEAX@Z",
+        "?EnableCurveShaper@@YAH_N@Z",
+        "?DisableCurveShaper@@YAHXZ",
+        "?GetCurveShaperBands@@YAHPEAX@Z",
+        "?SetCurveShaperBands@@YAHPEAX@Z",
+        "?ApplyCurveShaper@@YAHXZ",
+        "?QueryCurveShaper@@YAHPEAX@Z",
     ];
 
     /// <summary>True when capability JSON / probe note indicates a real matched export.</summary>
@@ -95,6 +112,36 @@ public static class CurveShaperSupport
         if (string.IsNullOrWhiteSpace(note)) return false;
         return note.Contains("export found", StringComparison.OrdinalIgnoreCase)
                || note.Contains("C export found", StringComparison.OrdinalIgnoreCase)
-               || note.Contains("matched:", StringComparison.OrdinalIgnoreCase);
+               || note.Contains("C export ready", StringComparison.OrdinalIgnoreCase)
+               || note.Contains("matched:", StringComparison.OrdinalIgnoreCase)
+               || note.Contains("export matched", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// CanApply = export found AND published ABI. Legacy <c>curve_shaper:true</c> without
+    /// <c>abi_published</c> is treated as detect-only (Apply stays off).
+    /// </summary>
+    public static bool ResolveCanApply(
+        bool curveShaperFlag,
+        bool exportFoundFlag,
+        bool? abiPublished,
+        string? note)
+    {
+        if (abiPublished == true && (exportFoundFlag || curveShaperFlag))
+            return true;
+        if (abiPublished == false)
+            return false;
+        // No probe blob: only honor curve_shaper when note does not say ABI missing.
+        if (curveShaperFlag && LooksLikeExportFound(note)
+            && note is not null
+            && note.Contains("ABI not published", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (curveShaperFlag && LooksLikeExportFound(note)
+            && note is not null
+            && note.Contains("ABI", StringComparison.OrdinalIgnoreCase)
+            && note.Contains("not published", StringComparison.OrdinalIgnoreCase))
+            return false;
+        // Strict: without abi_published=true, never enable Apply from a bare flag.
+        return false;
     }
 }

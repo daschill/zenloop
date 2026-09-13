@@ -158,8 +158,15 @@ public sealed class MultiVendorCapabilityMatrix
                     caps.BiosCo ? null : "BIOS CO unavailable"),
                 Feat("BiosRAM", caps.BiosRam, caps.BiosRam, "Ryzen Master CDefaultBIOS",
                     caps.BiosRam ? null : "BIOS RAM unavailable"),
-                Feat("CurveShaper", caps.CurveShaper, caps.CurveShaper, "Ryzen Master C export",
-                    caps.CurveShaper ? null : caps.CurveShaperReason),
+                Feat("CurveShaper",
+                    caps.CurveShaper || caps.CurveShaperExportFound,
+                    caps.CurveShaper, // CanApply only with published ABI
+                    "Ryzen Master C export",
+                    caps.CurveShaper
+                        ? null
+                        : (caps.CurveShaperExportFound
+                            ? CurveShaperSupport.SignatureUnknownNote
+                            : caps.CurveShaperReason)),
                 Feat("BoostOverride", caps.BoostOverride, false, "none",
                     "No Platform.dll C export for PBO boost override"),
             ],

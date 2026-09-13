@@ -50,11 +50,20 @@ public sealed class WindowsControlCapabilities
     public bool BiosStockWrite { get; init; }
 
     /// <summary>
-    /// Curve Shaper band read/write when Platform/Device expose a real C export; otherwise false (never invent bands).
+    /// Curve Shaper live Apply when Platform/Device expose a real C export <em>and</em> a published ABI.
+    /// Export-found alone is not enough (never invent bands / unknown calling convention).
     /// </summary>
     public bool CurveShaper { get; init; }
 
+    /// <summary>True when exhaustive probe matched a CS-related export (detect-only until ABI).</summary>
+    public bool CurveShaperExportFound { get; init; }
+
+    /// <summary>Native <c>abi_published</c>; false on all current Ryzen Master builds.</summary>
+    public bool CurveShaperAbiPublished { get; init; }
+
     public string CurveShaperReason { get; init; } = CurveShaperSupport.UnavailableReason;
+
+    public CurveShaperProbeInfo CurveShaperProbe { get; init; } = CurveShaperProbeInfo.Empty;
 
     public bool RequiresRebootAfterBios { get; init; } = true;
 
@@ -68,7 +77,8 @@ public sealed class WindowsControlCapabilities
             return string.IsNullOrEmpty(Error) ? "Control: helper unavailable" : "Control: " + Error;
         return $"Control  elev={Elevated}  session PBO={SessionPbo} CO={SessionCo}  "
             + $"BIOS PBO={BiosPbo} CO={BiosCo} RAM={BiosRam}  "
-            + $"CS={CurveShaper}  boost={BoostOverride}  GPU session={GpuManual} BIOS={GpuBiosPersist}";
+            + $"CS={CurveShaper} export={CurveShaperExportFound} abi={CurveShaperAbiPublished}  "
+            + $"boost={BoostOverride}  GPU session={GpuManual} BIOS={GpuBiosPersist}";
     }
 
     public static WindowsControlCapabilities Unavailable(string? why = null)
@@ -77,7 +87,10 @@ public sealed class WindowsControlCapabilities
             HelperAvailable = false,
             Error = why ?? "AMD Ryzen Master helper not available",
             CurveShaper = false,
+            CurveShaperExportFound = false,
+            CurveShaperAbiPublished = false,
             CurveShaperReason = CurveShaperSupport.UnavailableReason,
+            CurveShaperProbe = CurveShaperProbeInfo.Empty,
             Limitations =
             [
                 "CPU/SMU/BIOS control needs zenloop-cpu.exe + AMD Ryzen Master (Platform.dll / Device.dll).",
@@ -148,7 +161,7 @@ public sealed class WindowsControlSurface
         return result;
     }
 
-    /// <summary>Applies Curve Shaper only when <see cref="WindowsControlCapabilities.CurveShaper"/> is true.</summary>
+    /// <summary>Applies Curve Shaper only when <see cref="WindowsControlCapabilities.CurveShaper"/> (CanApply) is true.</summary>
     public ApplyResult ApplyCurveShaper(CurveShaperProfile profile, WindowsControlCapabilities? caps = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
@@ -200,16 +213,59 @@ public sealed class WindowsControlSurface
             var biosPbo = CapsBool(caps, "bios_pbo", bios);
             var biosCo = CapsBool(caps, "bios_co", bios);
             var biosRam = CapsBool(caps, "bios_ram", bios);
-            var curveShaper = Bool(caps, "curve_shaper");
             var csReason = Str(caps, "curve_shaper_note") ?? CurveShaperSupport.UnavailableReason;
+            var probe = CurveShaperProbeInfo.TryParseFromCapabilities(caps) ?? CurveShaperProbeInfo.Empty;
+            bool exportFound = CapsBool(caps, "curve_shaper_export_found", probe.ExportFound)
+                               || probe.ExportFound
+                               || CurveShaperSupport.LooksLikeExportFound(csReason);
+            bool abiPublished = false;
+            if (caps.TryGetProperty("curve_shaper_probe", out var pr)
+                && pr.ValueKind == JsonValueKind.Object
+                && pr.TryGetProperty("abi_published", out var abiEl))
+            {
+                abiPublished = abiEl.ValueKind == JsonValueKind.True;
+            }
+            else
+            {
+                abiPublished = probe.AbiPublished;
+            }
+
+            bool flag = Bool(caps, "curve_shaper");
+            bool canApply = CurveShaperSupport.ResolveCanApply(flag, exportFound, abiPublished, csReason);
+            if (flag && abiPublished) canApply = true;
+
+            var resolvedProbe = probe.ExportFound || probe.PlatformExports > 0 || probe.DeviceExports > 0
+                ? new CurveShaperProbeInfo
+                {
+                    ExportFound = exportFound || probe.ExportFound,
+                    AbiPublished = abiPublished,
+                    PlatformExports = probe.PlatformExports,
+                    DeviceExports = probe.DeviceExports,
+                    NamedHits = probe.NamedHits,
+                    PeHits = probe.PeHits,
+                    Match = probe.Match ?? (exportFound ? ExtractMatch(csReason) : null),
+                    MatchDll = probe.MatchDll,
+                    Alternative = probe.Alternative ?? CurveShaperProbeInfo.Empty.Alternative,
+                }
+                : new CurveShaperProbeInfo
+                {
+                    ExportFound = exportFound,
+                    AbiPublished = abiPublished,
+                    Match = exportFound ? ExtractMatch(csReason) : null,
+                    Alternative = CurveShaperProbeInfo.Empty.Alternative,
+                };
+
             return Build(
                 helper: true,
                 elev, co, bios, drv, supported,
                 sessionPbo, sessionCo, biosPbo, biosCo, biosRam,
                 Bool(caps, "boost_override"),
                 Bool(caps, "manual_all_core_oc"),
-                curveShaper,
+                canApply,
+                exportFound,
+                abiPublished,
                 csReason,
+                resolvedProbe,
                 gpu,
                 backend ?? Str(r, "backend") ?? "amd-ryzen-master",
                 ok ? null : Str(r, "error"));
@@ -226,10 +282,23 @@ public sealed class WindowsControlSurface
             boost: false,
             manualOc: false,
             curveShaper: false,
+            exportFound: false,
+            abiPublished: false,
             curveShaperReason: CurveShaperSupport.UnavailableReason,
+            CurveShaperProbeInfo.Empty,
             gpu,
             backend ?? Str(r, "backend") ?? "amd-ryzen-master",
             ok ? null : Str(r, "error"));
+    }
+
+    static string? ExtractMatch(string note)
+    {
+        const string marker = "export found:";
+        var idx = note.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        var rest = note[(idx + marker.Length)..].Trim();
+        var space = rest.IndexOf(' ');
+        return space > 0 ? rest[..space].Trim() : rest;
     }
 
     static WindowsControlCapabilities FromLoopback(GpuControlProbe? gpu)
@@ -248,7 +317,10 @@ public sealed class WindowsControlSurface
             boost: false,
             manualOc: false,
             curveShaper: false,
+            exportFound: false,
+            abiPublished: false,
             curveShaperReason: CurveShaperSupport.UnavailableReason,
+            CurveShaperProbeInfo.Empty,
             gpu,
             "loopback",
             null);
@@ -268,7 +340,10 @@ public sealed class WindowsControlSurface
         bool boost,
         bool manualOc,
         bool curveShaper,
+        bool exportFound,
+        bool abiPublished,
         string curveShaperReason,
+        CurveShaperProbeInfo probe,
         GpuControlProbe? gpu,
         string backend,
         string? error)
@@ -286,7 +361,7 @@ public sealed class WindowsControlSurface
         if (!manualOc)
             limits.Add("SetOverclockFreqAllCores is loaded but not exposed (manual all-core lock ≠ PBO boost).");
         if (!curveShaper)
-            limits.Add(curveShaperReason);
+            limits.Add(exportFound ? CurveShaperSupport.SignatureUnknownNote : curveShaperReason);
         if (gpu is { BiosPersist: false })
             limits.Add("GpuBiosPersist=false (ADLX cannot persist into BIOS).");
 
@@ -306,7 +381,10 @@ public sealed class WindowsControlSurface
             BoostOverride = boost,
             ManualAllCoreOc = manualOc,
             CurveShaper = curveShaper,
+            CurveShaperExportFound = exportFound,
+            CurveShaperAbiPublished = abiPublished,
             CurveShaperReason = curveShaperReason,
+            CurveShaperProbe = probe,
             GpuManual = gpu?.Manual ?? false,
             GpuFan = gpu?.Fan ?? false,
             GpuBiosPersist = false,

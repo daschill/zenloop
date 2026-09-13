@@ -22,21 +22,47 @@ public class CurveDramMetricsTests
             {"ok":true,"elevated":true,"driver_running":true,"supported_processor":true,
              "co_bind":true,"bios_bind":true,"backend":"amd-ryzen-master",
              "capabilities":{"session_pbo":true,"session_co":true,"bios_pbo":true,"bios_co":true,
-               "bios_ram":true,"curve_shaper":false,"boost_override":false,"manual_all_core_oc":false,
-               "curve_shaper_note":"no Platform.dll/Device.dll Curve Shaper C export"}}
+               "bios_ram":true,"curve_shaper":false,"curve_shaper_export_found":false,"boost_override":false,"manual_all_core_oc":false,
+               "curve_shaper_note":"no Platform.dll/Device.dll Curve Shaper C export",
+               "curve_shaper_probe":{"found":false,"platform_exports":120,"device_exports":80,"named_hits":0,"pe_hits":0,
+                 "match":null,"match_dll":null,"abi_published":false,"alternative":"Use signed PBO + Curve Optimizer"}}}
             """;
         var caps = WindowsControlSurface.FromCpuInfoJson(json);
         Assert.False(caps.CurveShaper);
+        Assert.False(caps.CurveShaperExportFound);
+        Assert.False(caps.CurveShaperAbiPublished);
         Assert.Contains("no Platform", caps.CurveShaperReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(120, caps.CurveShaperProbe.PlatformExports);
+        Assert.Contains("platform_exports=120", caps.CurveShaperProbe.SummaryLine());
 
-        const string yes = """
+        // Legacy/export-found without abi_published: Detect yes, CanApply no.
+        const string exportOnly = """
             {"ok":true,"capabilities":{"session_pbo":true,"session_co":true,"bios_pbo":true,"bios_co":true,
-               "bios_ram":true,"curve_shaper":true,"curve_shaper_note":"Curve Shaper C export found: GetCurveShaper"}}
+               "bios_ram":true,"curve_shaper":true,"curve_shaper_export_found":true,
+               "curve_shaper_note":"Curve Shaper C export found: GetCurveShaper in Platform.dll (ABI not published — ZenLoop will not invent band writes)",
+               "curve_shaper_probe":{"found":true,"platform_exports":100,"device_exports":50,"named_hits":1,"pe_hits":0,
+                 "match":"GetCurveShaper","match_dll":"Platform.dll","abi_published":false}}}
             """;
-        var on = WindowsControlSurface.FromCpuInfoJson(yes);
-        Assert.True(on.CurveShaper);
+        var on = WindowsControlSurface.FromCpuInfoJson(exportOnly);
+        Assert.False(on.CurveShaper); // CanApply requires abi_published
+        Assert.True(on.CurveShaperExportFound);
+        Assert.False(on.CurveShaperAbiPublished);
         Assert.Contains("GetCurveShaper", on.CurveShaperReason);
         Assert.True(CurveShaperSupport.LooksLikeExportFound(on.CurveShaperReason));
+        Assert.Equal("GetCurveShaper", on.CurveShaperProbe.Match);
+
+        // Future: published ABI unlocks CanApply.
+        const string ready = """
+            {"ok":true,"capabilities":{"session_pbo":true,"session_co":true,"bios_pbo":true,"bios_co":true,
+               "bios_ram":true,"curve_shaper":true,"curve_shaper_export_found":true,
+               "curve_shaper_note":"Curve Shaper C export ready: GetCurveShaper in Platform.dll",
+               "curve_shaper_probe":{"found":true,"platform_exports":100,"device_exports":50,"named_hits":1,"pe_hits":0,
+                 "match":"GetCurveShaper","match_dll":"Platform.dll","abi_published":true}}}
+            """;
+        var apply = WindowsControlSurface.FromCpuInfoJson(ready);
+        Assert.True(apply.CurveShaper);
+        Assert.True(apply.CurveShaperExportFound);
+        Assert.True(apply.CurveShaperAbiPublished);
     }
 
     [Fact]
@@ -49,6 +75,32 @@ public class CurveDramMetricsTests
         Assert.Contains("Curve Shaper", r.Error!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("PBO", r.Note!, StringComparison.OrdinalIgnoreCase);
         Assert.Null(backend.ReadCurveShaper(available: false));
+    }
+
+    [Fact]
+    public void Apply_curve_shaper_refuses_empty_bands_even_when_available()
+    {
+        var backend = new AmdRyzenMasterBackend(_ => throw new InvalidOperationException("should not run"));
+        var r = backend.ApplyCurveShaper(new CurveShaperProfile { Enabled = true }, available: true);
+        Assert.False(r.SessionApplied);
+        Assert.Contains("no band", r.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Apply_curve_shaper_helper_abi_refuse_never_fakes_success()
+    {
+        var backend = new AmdRyzenMasterBackend(_ =>
+            """{"ok":false,"session_applied":false,"bios_persisted":false,"error":"Curve Shaper export matched (GetCurveShaper in Platform.dll) but no published C ABI — refusing cs-apply"}""");
+        var r = backend.ApplyCurveShaper(
+            new CurveShaperProfile
+            {
+                Enabled = true,
+                Bands = { CurveShaperBand.FromSigned(0, -10) },
+            },
+            available: true);
+        Assert.False(r.SessionApplied);
+        Assert.False(r.BiosPersisted);
+        Assert.Contains("ABI", r.Error!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -81,7 +133,28 @@ public class CurveDramMetricsTests
         Assert.Contains("PPT 120", summary);
         Assert.Contains("Curve Optimizer", summary);
         Assert.Contains("not Curve Shaper", summary, StringComparison.OrdinalIgnoreCase);
-        Assert.True(CurveShaperSupport.ProbedExportNames.Count >= 10);
+        Assert.True(CurveShaperSupport.ProbedExportNames.Count >= 18);
+        Assert.Contains(CurveShaperSupport.ProbedExportNames, n => n.StartsWith('?'));
+    }
+
+    [Fact]
+    public void ResolveCanApply_requires_abi_published()
+    {
+        Assert.False(CurveShaperSupport.ResolveCanApply(
+            curveShaperFlag: true,
+            exportFoundFlag: true,
+            abiPublished: false,
+            note: "Curve Shaper C export found: GetCurveShaper (ABI not published)"));
+        Assert.True(CurveShaperSupport.ResolveCanApply(
+            curveShaperFlag: true,
+            exportFoundFlag: true,
+            abiPublished: true,
+            note: "ready"));
+        Assert.False(CurveShaperSupport.ResolveCanApply(
+            curveShaperFlag: true,
+            exportFoundFlag: true,
+            abiPublished: null,
+            note: "export found"));
     }
 
     [Fact]
@@ -103,6 +176,10 @@ public class CurveDramMetricsTests
         Assert.True(parsed.CurveShaper!.Enabled);
         Assert.Equal(2, parsed.CurveShaper.Bands.Count);
         Assert.Equal(-10, parsed.CurveShaper.Bands[0].SignedOffset);
+
+        var refuse = OptimizePreflight.FormatCurveShaperPackRefuse(parsed.CurveShaper, caps: null);
+        Assert.Contains("refusing live CS apply", refuse, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PBO", refuse, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

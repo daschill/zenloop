@@ -59,6 +59,40 @@ public class AmdPrerequisitesTests
         Assert.True(AmdPrerequisites.LooksLikeMissingRyzenMaster("AMDRyzenMasterDriver not installed"));
         Assert.False(AmdPrerequisites.LooksLikeMissingRyzenMaster("GPU hotspot 90 C"));
     }
+
+    [Fact]
+    public void OptimizePreflight_hard_blocks_without_adrenalin_or_rm()
+    {
+        var missing = new PrerequisiteStatus(false, false, "no adlx", "no rm");
+        var blocked = OptimizePreflight.Evaluate(missing);
+        Assert.True(blocked.HardBlock);
+        Assert.False(blocked.CanProceed);
+        Assert.Contains("Adrenalin", blocked.Message, StringComparison.OrdinalIgnoreCase);
+
+        var ready = new PrerequisiteStatus(true, true, @"C:\adlx", @"C:\rm");
+        var caps = WindowsControlSurface.FromCpuInfoJson(
+            """
+            {"ok":true,"elevated":true,"driver_running":false,"supported_processor":true,
+             "co_bind":false,"bios_bind":true,"backend":"amd-ryzen-master",
+             "capabilities":{"session_pbo":false,"session_co":false,"bios_pbo":true,"bios_co":true,
+               "bios_ram":true,"curve_shaper":false,"gpu_bios_persist":false}}
+            """,
+            GpuControlProbe.FromRanges(false, false));
+        var ok = OptimizePreflight.Evaluate(ready, caps);
+        Assert.True(ok.CanProceed);
+        Assert.False(ok.HardBlock);
+        Assert.Contains(ok.Warnings, w => w.Contains("driver", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(ok.Warnings, w => w.Contains("Curve Shaper", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void OptimizePreflight_pack_cs_refuse_is_honest()
+    {
+        var cs = new CurveShaperProfile { Enabled = true, Bands = { CurveShaperBand.FromSigned(0, -5) } };
+        var msg = OptimizePreflight.FormatCurveShaperPackRefuse(cs);
+        Assert.Contains("refusing", msg, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("applied Curve Shaper", msg, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 public class BiosWriteGuardTests
@@ -168,6 +202,13 @@ public class FaultClassifierTests
 
 /// <summary>
 /// Live ADLX / Ryzen Master stress — skipped in CI via Category=LiveHardware filter.
+/// Manual checklist on a Windows AMD Ryzen + Radeon PC (Adrenalin + Ryzen Master installed):
+/// 1. zenloop-cpu.exe caps → curve_shaper false on stock RM; probe export counts &gt; 0; abi_published false
+/// 2. zenloop-cpu.exe cs-apply --enabled 1 → refuses (no symbol or no published ABI); never invents bands
+/// 3. Optimize this PC with both products installed → GPU ADLX + CO path; blocked MessageBox if either missing
+/// 4. UV bake-off writes %LocalAppData%\ZenLoop\bakeoff report
+/// 5. DRAM lab Read RAM + Export; RTSS OSD when RTSS running
+/// Policy: no WinRing0 / raw SMU.
 /// </summary>
 public class LiveHardwareTests
 {
@@ -176,5 +217,12 @@ public class LiveHardwareTests
     public void Live_adlx_and_ryzen_master_smoke()
     {
         Assert.Fail("Not executed in CI.");
+    }
+
+    [Fact(Skip = "Requires live AMD Ryzen Master Platform/Device on a Windows PC")]
+    [Trait("Category", "LiveHardware")]
+    public void Live_curve_shaper_caps_and_cs_apply_refuse()
+    {
+        Assert.Fail("Not executed in CI — verify caps probe + cs-apply refuse on physical AMD box.");
     }
 }
